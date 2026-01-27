@@ -1,0 +1,16 @@
+{
+  "name": "pagepulse-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "echo 'Run docker-compose up to start local development'"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
