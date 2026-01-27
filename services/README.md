@@ -132,7 +132,7 @@ sequenceDiagram
 *   **Web Client**: Built with React (Vite). Connects to the Gateway for REST API calls and establishes a WebSocket connection for Chat.
 
 ### 2. Synchronous Inter-Service (gRPC)
-Used when a service needs an immediate answer from another service.
+Used when a service needs an immediate answer from another service. **These calls happen directly between services (Service-to-Service) and do NOT pass through the API Gateway.**
 *   **Book Service -> Auth Service**: Validates user tokens included in requests.
 *   **Book Service -> Payment Service**: Processes payments synchronously during a book rental transaction.
 *   **Chat Service -> Auth Service**: Validates user tokens immediately upon WebSocket connection handshake.
