@@ -13,7 +13,7 @@ graph TD
     
     %% Gateway Layer
     subgraph "Edge Layer"
-        Gateway[Nginx API Gateway<br/>(Load Balancer & Proxy)]
+        Gateway["Nginx API Gateway<br/>(Load Balancer & Proxy)"]
     end
 
     %% Web Application
@@ -23,18 +23,18 @@ graph TD
 
     %% Services Layer
     subgraph "Microservices Cluster"
-        Auth[Auth Service<br/>(Express + gRPC)]
-        Book[Book Service<br/>(Express + gRPC + RabbitMQ)]
-        Payment[Payment Service<br/>(Express + gRPC)]
-        Chat[Chat Service<br/>(Socket.io + gRPC)]
-        Notif[Notification Service<br/>(Worker)]
+        Auth["Auth Service<br/>(Express + gRPC)"]
+        Book["Book Service<br/>(Express + gRPC + RabbitMQ)"]
+        Payment["Payment Service<br/>(Express + gRPC)"]
+        Chat["Chat Service<br/>(Socket.io + gRPC)"]
+        Notif["Notification Service<br/>(Worker)"]
     end
 
     %% Infrastructure Layer
     subgraph "Data & Infra"
-        DB_Auth[(Postgres: AuthDB)]
-        DB_Book[(Postgres: BookDB)]
-        DB_Pay[(Postgres: PayDB)]
+        DB_Auth[("Postgres: AuthDB")]
+        DB_Book[("Postgres: BookDB")]
+        DB_Pay[("Postgres: PayDB")]
         RabbitMQ{RabbitMQ Bus}
         Redis[(Redis Cache)]
     end
