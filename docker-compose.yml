@@ -11,7 +11,7 @@ services:
       - auth-service
       - book-service
       - chat-service
-      - web-client
+
     networks:
       - pagepulse-network
 
@@ -46,6 +46,8 @@ services:
   auth-service:
     build:
       context: ./services/auth-service
+    volumes:
+      - ./packages/protos:/packages/protos
     environment:
       - GRPC_PORT=${GRPC_PORT_AUTH}
       - HTTP_PORT=${HTTP_PORT}
@@ -57,11 +59,15 @@ services:
   book-service:
     build:
       context: ./services/book-service
+    volumes:
+      - ./packages/protos:/packages/protos
+      - ./services/book-service/src:/app/src
     environment:
       - GRPC_PORT=${GRPC_PORT_BOOK}
       - HTTP_PORT=${HTTP_PORT}
       - RABBITMQ_URL=${RABBITMQ_URL}
       - DB_URL=${DB_URL}
+      - REDIS_URL=redis://redis:${REDIS_PORT}
     depends_on:
       - rabbitmq
     networks:
@@ -72,34 +78,21 @@ services:
       context: ./services/chat-service
     environment:
       - PORT=${HTTP_PORT}
-    networks:
-      - pagepulse-network
-
-  payment-service:
-    build:
-      context: ./services/payment-service
-    environment:
-      - PORT=${HTTP_PORT}
+      - DB_URL=${DB_URL}
+    volumes:
+      - ./services/chat-service/src:/app/src
     networks:
       - pagepulse-network
 
   notification-service:
     build:
       context: ./services/notification-service
+    volumes:
+      - ./services/notification-service/src:/app/src
     environment:
       - RABBITMQ_URL=${RABBITMQ_URL}
     depends_on:
       - rabbitmq
-    networks:
-      - pagepulse-network
-
-  # --- Frontend ---
-  web-client:
-    build:
-      context: ./apps/web-client
-    ports: [ "3000:3000" ]
-    environment:
-      - VITE_API_GATEWAY_URL=http://localhost:${NGINX_PORT}/api
     networks:
       - pagepulse-network
 

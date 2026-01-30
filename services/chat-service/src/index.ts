@@ -1,81 +1,259 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import * as grpc from '@grpc/grpc-js';
-import * as protoLoader from '@grpc/proto-loader';
+import { Pool } from 'pg';
 import path from 'path';
+import fs from 'fs';
+import * as crypto from 'crypto';
 
 const app = express();
+app.use(express.json()); // Enable JSON body parsing
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
     cors: {
-        origin: "*", // Adjust for prod
+        origin: "*",
         methods: ["GET", "POST"]
     }
 });
 
-// --- gRPC Auth Client Setup ---
-const PROTO_PATH = path.join(__dirname, '../../../packages/protos/auth.proto');
-const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
-    keepCase: true, longs: String, enums: String, defaults: true, oneofs: true
+// --- Database Setup ---
+const pool = new Pool({
+    connectionString: process.env.DB_URL
 });
-const authProto: any = grpc.loadPackageDefinition(packageDefinition).auth;
-const authClient = new authProto.AuthService(
-    `auth-service:${process.env.GRPC_PORT_AUTH || 50051}`,
-    grpc.credentials.createInsecure()
-);
 
-// Middleware: Validate Token on Connection
-io.use((socket, next) => {
-    const token = socket.handshake.auth.token; // Expect { auth: { token: "..." } } on client
-    if (!token) {
-        return next(new Error("Authentication error: No token provided"));
+async function initDB() {
+    // ... (existing initDB)
+    const maxRetries = 10;
+    let retries = 0;
+    while (retries < maxRetries) {
+        try {
+            const initSqlPath = path.join(__dirname, 'db/init.sql');
+            const initSql = fs.readFileSync(initSqlPath, 'utf8');
+            await pool.query(initSql);
+            console.log('[DB] Chat Database initialized successfully');
+            return;
+        } catch (err) {
+            retries++;
+            console.log(`[DB] Connection failed (Attempt ${retries}/${maxRetries}), retrying in 5s...`);
+            await new Promise(res => setTimeout(res, 5000));
+        }
+    }
+    console.error('[DB] Could not connect to database after multiple attempts. Exiting.');
+    process.exit(1);
+}
+
+initDB();
+
+// --- HTTP API Routes ---
+
+// 1. Initiate Private Chat (by user_id)
+app.post('/private', async (req, res) => {
+    const { myId, targetUserId } = req.body;
+
+    if (!myId || !targetUserId) {
+        return res.status(400).json({ error: "Missing myId or targetUserId" });
     }
 
-    // Call Auth Service via gRPC
-    authClient.ValidateToken({ token }, (err: any, response: any) => {
-        if (err) {
-            console.error("Auth gRPC Error:", err);
-            return next(new Error("Authentication error: Validation failed"));
-        }
-        if (!response || !response.valid) {
-            return next(new Error("Authentication error: Invalid Token"));
+    try {
+        // A. Check for Blocked Status (Bidirectional check)
+        const blockCheck = await pool.query(`
+            SELECT 1 FROM friends 
+            WHERE ((user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)) 
+              AND status = 'blocked'
+        `, [myId, targetUserId]);
+
+        if ((blockCheck.rowCount || 0) > 0) {
+            return res.status(403).json({ error: "Cannot create chat: User is blocked" });
         }
 
-        // Attach user info to socket
-        (socket as any).user = {
-            id: response.user_id,
-            email: response.email,
-            role: response.role
-        };
-        console.log(`User authenticated: ${response.email}`);
-        next();
-    });
+        // B. Check for existing private conversation
+        const existingRes = await pool.query(`
+            SELECT c.conversation_id 
+            FROM conversations c
+            JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id
+            JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id
+            WHERE c.type = 'private' 
+              AND cp1.user_id = $1 
+              AND cp2.user_id = $2
+        `, [myId, targetUserId]);
+
+        if (existingRes.rows.length > 0) {
+            return res.json({ conversationId: existingRes.rows[0].conversation_id, created: false });
+        }
+
+        // C. Create new conversation
+        const newConvId = crypto.randomUUID();
+        const now = new Date();
+
+        await pool.query('BEGIN');
+        await pool.query('INSERT INTO conversations (conversation_id, type, created_at) VALUES ($1, $2, $3)', [newConvId, 'private', now]);
+        await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, myId]);
+        await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, targetUserId]);
+        await pool.query('COMMIT');
+
+        return res.json({ conversationId: newConvId, created: true });
+
+    } catch (err) {
+        await pool.query('ROLLBACK');
+        console.error("Error creating private chat:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
 });
 
-io.on('connection', (socket) => {
-    const user = (socket as any).user;
-    console.log(`User connected: ${socket.id} (${user.email})`);
+// 2. Initiate/Invite Book Session
+app.post('/reading', async (req, res) => {
+    const { myId, bookId, friendUsername } = req.body; // friendUsername optional
 
-    socket.on('join_room', (room) => {
-        socket.join(room);
-        console.log(`User ${user.email} joined room ${room}`);
+    try {
+        const newConvId = crypto.randomUUID();
+        const now = new Date();
+
+        await pool.query('BEGIN');
+        // Create session with Host logic
+        await pool.query(
+            'INSERT INTO conversations (conversation_id, type, book_id, host_user_id, created_at) VALUES ($1, $2, $3, $4, $5)',
+            [newConvId, 'book', bookId, myId, now]
+        );
+
+        // Add Host
+        await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, myId]);
+
+        // Add Friend if provided
+        if (friendUsername) {
+            const userRes = await pool.query('SELECT user_id FROM users WHERE username = $1', [friendUsername]);
+            if (userRes.rows.length > 0) {
+                const friendId = userRes.rows[0].user_id;
+                await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, friendId]);
+            }
+        }
+        await pool.query('COMMIT');
+
+        return res.json({ conversationId: newConvId });
+
+    } catch (err) {
+        await pool.query('ROLLBACK');
+        console.error("Error creating reading session:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
+// --- WebSocket Logic ---
+interface ReadingSession {
+    host: string;
+    users: Set<string>;
+}
+
+const activeSessions = new Map<string, ReadingSession>(); // conversationId -> Session
+
+io.on('connection', (socket) => {
+    console.log('User connected:', socket.id);
+
+    // --- Private Chat Events (Persisted) ---
+    socket.on('join_private_chat', (conversationId: string) => {
+        socket.join(conversationId);
+        console.log(`User ${socket.id} joined private chat ${conversationId}`);
     });
 
-    socket.on('send_message', (data) => {
-        // Broadcast to room
-        io.to(data.room).emit('receive_message', {
-            ...data,
-            sender: user.email // Enforce sender identity
+    socket.on('send_private_message', async (data: any) => {
+        const { conversation_id, sender_id, content } = data;
+        try {
+            // Check for Blocked Status before sending
+            // We need the recipient ID. Query participants.
+            const partRes = await pool.query(`
+                SELECT user_id FROM conversation_participants 
+                WHERE conversation_id = $1 AND user_id != $2
+            `, [conversation_id, sender_id]);
+
+            if (partRes.rows.length > 0) {
+                const recipientId = partRes.rows[0].user_id;
+                const blockCheck = await pool.query(`
+                    SELECT 1 FROM friends 
+                    WHERE ((user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)) 
+                      AND status = 'blocked'
+                `, [sender_id, recipientId]);
+
+                if ((blockCheck.rowCount || 0) > 0) {
+                    socket.emit("error", "Message failed: You are blocked or have blocked this user");
+                    return;
+                }
+            }
+
+            const message_id = crypto.randomUUID();
+            const sent_at = new Date();
+
+            // Persist
+            await pool.query(
+                'INSERT INTO messages (message_id, conversation_id, sender_id, content, sent_at) VALUES ($1, $2, $3, $4, $5)',
+                [message_id, conversation_id, sender_id, content, sent_at]
+            );
+
+            // Broadcast
+            io.to(conversation_id).emit('receive_private_message', {
+                message_id, conversation_id, sender_id, content, sent_at
+            });
+        } catch (err) {
+            console.error("Error saving private message:", err);
+            socket.emit("error", "Failed to send message");
+        }
+    });
+
+    // --- Reading Session Events (Ephemeral) ---
+    socket.on('join_reading_session', (data: { conversationId: string, userId: string, bookId: number }) => {
+        const { conversationId, userId } = data;
+        socket.join(conversationId);
+
+        // Track session state in memory
+        if (!activeSessions.has(conversationId)) {
+            // First user is host (or frontend tells us who host is? Assuming first joiner for now or derived from DB check?)
+            // User requirement: "Backend creates / joins room... if !has -> set host".
+            // Ideally frontend calls an API to create the session in DB first, then joins.
+            // Here, we just track active participation.
+            activeSessions.set(conversationId, {
+                host: userId,
+                users: new Set([userId])
+            });
+            console.log(`[Reading] New session ${conversationId} started by host ${userId}`);
+        } else {
+            activeSessions.get(conversationId)?.users.add(userId);
+            console.log(`[Reading] User ${userId} joined session ${conversationId}`);
+        }
+
+        // Tag socket with userId for disconnect handling
+        (socket as any).userId = userId;
+    });
+
+    socket.on('reading_message', (data: { conversationId: string, sender: any, content: string }) => {
+        // Broadcast ONLY - No DB
+        const { conversationId, sender, content } = data;
+        io.to(conversationId).emit('reading_message', {
+            sender,
+            content,
+            time: Date.now()
         });
     });
 
     socket.on('disconnect', () => {
         console.log('User disconnected:', socket.id);
+        const userId = (socket as any).userId;
+
+        if (userId) {
+            // Check if host of any active session
+            for (const [cid, session] of activeSessions.entries()) {
+                if (session.host === userId) {
+                    console.log(`[Reading] Host ${userId} left. Ending session ${cid}`);
+                    io.to(cid).emit('session_ended');
+                    activeSessions.delete(cid);
+                    io.in(cid).disconnectSockets(true);
+                } else if (session.users.has(userId)) {
+                    session.users.delete(userId);
+                }
+            }
+        }
     });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 httpServer.listen(PORT, () => {
     console.log(`Chat Service running on port ${PORT}`);
 });
