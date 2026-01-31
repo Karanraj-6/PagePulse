@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: chat-service
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: chat-service
@@ -14,19 +14,41 @@ spec:
     spec:
       containers:
       - name: chat-service
-        image: chat-service:latest
-        imagePullPolicy: IfNotPresent
+        image: chat-service:v3
+        imagePullPolicy: Never
+        resources:
+          requests:
+             cpu: "50m"
+             memory: "64Mi"
         ports:
         - containerPort: 3000
+        env:
+        - name: HTTP_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: pagepulse-config
+              key: HTTP_PORT
+        - name: DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: pagepulse-secrets
+              key: DB_URL
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: pagepulse-secrets
+              key: JWT_SECRET
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: chat-service
 spec:
+  type: NodePort
   selector:
     app: chat-service
   ports:
   - name: http
     port: 3000
     targetPort: 3000
+    nodePort: 30005

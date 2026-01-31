@@ -9,3 +9,9 @@ data:
   HTTP_PORT: "3000"
   GRPC_PORT_AUTH: "50051"
   GRPC_PORT_BOOK: "50051"
+  SMTP_HOST: "smtp.ethereal.email"
+  SMTP_PORT: "587"
+  SMTP_USER: "test_user"
+  SMTP_PASS: "test_pass"
+  PUBLIC_URL: "http://localhost:3000" # Minikube might need different URL, but keeping for now
+  REDIS_PORT: "6379"

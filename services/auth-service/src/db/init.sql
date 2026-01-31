@@ -26,3 +26,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     message TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS profile_photos (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    photo_url TEXT
+);

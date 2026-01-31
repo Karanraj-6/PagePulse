@@ -1,7 +1,15 @@
 FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
+
+WORKDIR /usr/src/app
+
+# Copy shared packages
+COPY packages/protos ./packages/protos
+
+# Setup Service
+WORKDIR /usr/src/app/services/book-service
+COPY services/book-service/package*.json ./
 RUN npm install
-COPY . .
-EXPOSE 3000 50051
+COPY services/book-service/ .
+
+EXPOSE 3000 50052
 CMD ["npm", "start"]

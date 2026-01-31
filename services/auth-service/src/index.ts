@@ -7,12 +7,70 @@ import fs from 'fs';
 import { createHash, randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
 import amqp from 'amqplib';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import multer from 'multer';
 
 const app = express();
+app.use(cookieParser());
+app.use(cors({
+    origin: ["http://localhost:5173", "http://localhost:3000"],
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+}));
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_key_123';
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://rabbitmq:5672';
+
+// AWS S3 Configuration
+const s3Client = new S3Client({
+    region: process.env.AWS_REGION || 'us-east-1',
+    credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || ''
+    }
+});
+
+const S3_BUCKET = process.env.S3_BUCKET_NAME || 'your-bucket-name';
+
+// Configure Multer for memory storage
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 5 * 1024 * 1024, // 5MB limit
+    },
+    fileFilter: (req, file, cb) => {
+        if (!file.mimetype.startsWith('image/')) {
+            cb(new Error('Only image files are allowed!'));
+            return;
+        }
+        cb(null, true);
+    }
+});
+
+// Helper function to upload to S3
+async function uploadToS3(file: Express.Multer.File, userId: string): Promise<string> {
+    const fileExtension = file.originalname.split('.').pop();
+    const fileName = `avatars/${userId}-${randomUUID()}.${fileExtension}`;
+
+    const command = new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: fileName,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+        ACL: 'public-read',
+    });
+
+    try {
+        await s3Client.send(command);
+        return `https://${S3_BUCKET}.s3.amazonaws.com/${fileName}`;
+    } catch (error) {
+        console.error('S3 Upload Error:', error);
+        throw new Error('Failed to upload image to S3');
+    }
+}
 
 // --- Database Setup ---
 const pool = new Pool({
@@ -39,7 +97,6 @@ async function initDB() {
     process.exit(1);
 }
 
-// Initialize DB on startup
 initDB();
 
 // --- RabbitMQ Setup ---
@@ -66,7 +123,7 @@ function publishEvent(eventType: string, payload: any) {
     }
 }
 
-// --- Helper: Password Hashing (using crypto) ---
+// --- Helper: Password Hashing ---
 function hashPassword(password: string): string {
     return createHash('sha256').update(password).digest('hex');
 }
@@ -87,16 +144,75 @@ app.post('/auth/register', async (req, res) => {
             [userId, username, email, passwordHash]
         );
 
-        // Publish Event
+        // Create default profile photo entry
+        await pool.query(
+            'INSERT INTO profile_photos (user_id, photo_url) VALUES ($1, $2)',
+            [userId, null]
+        );
+
         publishEvent('user.registered', { email, username });
 
-        res.json({ userId, username, message: "User created" });
+        const token = jwt.sign(
+            { user_id: userId, username: username },
+            JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        res.cookie('token', token, {
+            httpOnly: true,
+            secure: false,
+            sameSite: 'lax',
+            maxAge: 3600000
+        });
+
+        res.json({ userId, username, token, message: "User created" });
     } catch (err: any) {
-        if (err.code === '23505') { // Unique violation
+        if (err.code === '23505') {
             return res.status(409).json({ error: "Username or email already exists" });
         }
         console.error("Register Error:", err);
         res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
+// 2.5 Get Current User (Me)
+app.get('/auth/me', async (req, res) => {
+    const token = req.cookies.token;
+    if (!token) {
+        return res.status(401).json({ error: "Not authenticated" });
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET) as any;
+        
+        // Fetch user details with profile photo
+        const userResult = await pool.query(
+            'SELECT user_id, username, email FROM users WHERE user_id = $1',
+            [decoded.user_id]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        const user = userResult.rows[0];
+
+        // Fetch profile photo
+        const photoResult = await pool.query(
+            'SELECT photo_url FROM profile_photos WHERE user_id = $1',
+            [decoded.user_id]
+        );
+
+        const avatar = photoResult.rows[0]?.photo_url || null;
+
+        res.json({ 
+            id: user.user_id, 
+            username: user.username,
+            email: user.email,
+            avatar: avatar
+        });
+    } catch (err) {
+        return res.status(401).json({ error: "Invalid token" });
     }
 });
 
@@ -106,30 +222,114 @@ app.post('/auth/login', async (req, res) => {
     if (!username || !password) return res.status(400).json({ error: "Missing fields" });
 
     try {
-        const result = await pool.query('SELECT user_id, username, password_hash FROM users WHERE username = $1', [username]);
-        if (result.rows.length === 0) return res.status(401).json({ error: "Invalid credentials" });
+        console.log(`[Login] Attempt for username: '${username}'`);
+        const result = await pool.query(
+            'SELECT user_id, username, email, password_hash FROM users WHERE username = $1 OR email = $1',
+            [username]
+        );
+
+        if (result.rows.length === 0) {
+            console.log(`[Login] User '${username}' not found in DB.`);
+            return res.status(401).json({ error: "Invalid credentials" });
+        }
 
         const user = result.rows[0];
         const inputHash = hashPassword(password);
 
+        console.log(`[Login] Found user: ${user.username}`);
+
         if (inputHash !== user.password_hash) {
+            console.log(`[Login] Password mismatch!`);
             return res.status(401).json({ error: "Invalid credentials" });
         }
 
+        // Fetch profile photo
+        const profile_url = await pool.query(
+            'SELECT photo_url FROM profile_photos WHERE user_id = $1',
+            [user.user_id]
+        );
+
+        console.log(`[Login] Success!`);
         const token = jwt.sign(
             { user_id: user.user_id, username: user.username },
             JWT_SECRET,
             { expiresIn: '1h' }
         );
 
-        res.json({ token, user: { id: user.user_id, name: user.username } });
+        res.json({ 
+            token, 
+            user: { 
+                id: user.user_id, 
+                name: user.username, 
+                email: user.email, 
+                avatar: profile_url.rows[0]?.photo_url || null
+            } 
+        });
     } catch (err) {
         console.error("Login Error:", err);
         res.status(500).json({ error: "Internal Server Error" });
     }
 });
 
-// 3. Search Users (for Friend Discovery)
+// NEW: Upload Avatar
+app.post('/users/avatar', upload.single('avatar'), async (req, res) => {
+    try {
+        const token = req.cookies.token;
+        if (!token) {
+            return res.status(401).json({ error: "Not authenticated" });
+        }
+
+        const decoded = jwt.verify(token, JWT_SECRET) as any;
+        const userId = decoded.user_id;
+
+        if (!req.file) {
+            return res.status(400).json({ error: "No file uploaded" });
+        }
+
+        console.log(`[Avatar Upload] User ${userId} uploading file: ${req.file.originalname}`);
+
+        // Upload to S3
+        const avatarUrl = await uploadToS3(req.file, userId);
+
+        console.log(`[Avatar Upload] Successfully uploaded to S3: ${avatarUrl}`);
+
+        // Update or insert profile photo in database
+        const existingPhoto = await pool.query(
+            'SELECT user_id FROM profile_photos WHERE user_id = $1',
+            [userId]
+        );
+
+        if (existingPhoto.rows.length > 0) {
+            // Update existing
+            await pool.query(
+                'UPDATE profile_photos SET photo_url = $1 WHERE user_id = $2',
+                [avatarUrl, userId]
+            );
+        } else {
+            // Insert new
+            await pool.query(
+                'INSERT INTO profile_photos (user_id, photo_url) VALUES ($1, $2)',
+                [userId, avatarUrl]
+            );
+        }
+
+        console.log(`[Avatar Upload] Database updated for user ${userId}`);
+
+        res.json({ 
+            success: true, 
+            avatarUrl 
+        });
+    } catch (error: any) {
+        console.error('Avatar Upload Error:', error);
+        if (error.message === 'Failed to upload image to S3') {
+            res.status(500).json({ error: "Failed to upload image to cloud storage" });
+        } else {
+            res.status(500).json({ error: "Internal Server Error" });
+        }
+    }
+});
+
+// 3. Search Users
 app.get('/users', async (req, res) => {
     const { q } = req.query;
     try {
@@ -146,7 +346,6 @@ app.get('/users', async (req, res) => {
 });
 
 // 4. Friend Management
-// GET /friends?userId=UUID (List friends)
 app.get('/friends', async (req, res) => {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ error: "Missing userId" });
@@ -171,11 +370,8 @@ app.get('/friends', async (req, res) => {
     }
 });
 
-// GET /friends/accept (Handle Email Link)
 app.get('/friends/accept', async (req, res) => {
     const { userId, targetId } = req.query;
-    // userId: The person accepting (the friend_id in DB)
-    // targetId: The person who sent (the user_id in DB) - this is the one who gets notified
 
     if (!userId || !targetId) return res.send("Invalid Link");
 
@@ -186,11 +382,9 @@ app.get('/friends/accept', async (req, res) => {
         );
 
         if ((updateRes.rowCount || 0) > 0) {
-            // Get accepter's name
             const accepterRes = await pool.query("SELECT username FROM users WHERE user_id = $1", [userId]);
             const accepterName = accepterRes.rows[0]?.username || "A friend";
 
-            // Create in-app notification for requester
             await pool.query(
                 "INSERT INTO notifications (user_id, message) VALUES ($1, $2)",
                 [targetId, `${accepterName} accepted your friend request!`]
@@ -204,7 +398,6 @@ app.get('/friends/accept', async (req, res) => {
     }
 });
 
-// POST /friends (Send Request or Block)
 app.post('/friends', async (req, res) => {
     const { myId, targetId, action } = req.body;
     if (!myId || !targetId || !['add', 'block'].includes(action)) {
@@ -225,9 +418,7 @@ app.post('/friends', async (req, res) => {
             );
         }
 
-        // Publish Event if it's a Friend Request
         if (action === 'add') {
-            // Need usernames for email
             const senderRes = await pool.query('SELECT username FROM users WHERE user_id = $1', [myId]);
             const targetRes = await pool.query('SELECT username, email FROM users WHERE user_id = $1', [targetId]);
 
@@ -240,8 +431,8 @@ app.post('/friends', async (req, res) => {
                     senderName,
                     targetName,
                     targetEmail,
-                    senderId: myId,  // For the link: senderId is targetId in /friends/accept param logic
-                    targetId: targetId // For the link: targetId is userId in /friends/accept param logic
+                    senderId: myId,
+                    targetId: targetId
                 });
             }
         }
@@ -253,7 +444,6 @@ app.post('/friends', async (req, res) => {
     }
 });
 
-// PUT /friends (Accept Request via JSON API)
 app.put('/friends', async (req, res) => {
     const { myId, targetId } = req.body;
     try {
@@ -263,11 +453,9 @@ app.put('/friends', async (req, res) => {
         );
 
         if ((updateRes.rowCount || 0) > 0) {
-            // Get accepter's name (myId is the one accepting)
             const accepterRes = await pool.query("SELECT username FROM users WHERE user_id = $1", [myId]);
             const accepterName = accepterRes.rows[0]?.username || "A friend";
 
-            // Create notification for requester (targetId is the one who asked)
             await pool.query(
                 "INSERT INTO notifications (user_id, message) VALUES ($1, $2)",
                 [targetId, `${accepterName} accepted your friend request!`]
@@ -282,8 +470,6 @@ app.put('/friends', async (req, res) => {
 });
 
 // 5. Notifications Management
-
-// GET /notifications?userId=UUID
 app.get('/notifications', async (req, res) => {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ error: "Missing userId" });
@@ -300,11 +486,8 @@ app.get('/notifications', async (req, res) => {
     }
 });
 
-// DELETE /notifications/:id
 app.delete('/notifications/:id', async (req, res) => {
     const { id } = req.params;
-    // Note: In a real app, verify that the notification belongs to the authenticated user.
-    // For now, simple ID deletion.
     try {
         await pool.query("DELETE FROM notifications WHERE id = $1", [id]);
         res.json({ success: true });
@@ -313,7 +496,6 @@ app.delete('/notifications/:id', async (req, res) => {
         res.status(500).json({ error: "Internal Server Error" });
     }
 });
-
 
 const HTTP_PORT = process.env.HTTP_PORT || 3000;
 app.listen(HTTP_PORT, () => {
@@ -326,14 +508,18 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
     keepCase: true, longs: String, enums: String, defaults: true, oneofs: true
 });
 const authProto: any = grpc.loadPackageDefinition(packageDefinition).auth;
+
 function validateToken(call: any, callback: any) {
     const token = call.request.token;
     if (!token) return callback(null, { valid: false });
     try {
         const decoded = jwt.verify(token, JWT_SECRET) as any;
         callback(null, { user_id: decoded.user_id, email: decoded.email || "", role: "user", valid: true });
-    } catch (err) { callback(null, { valid: false }); }
+    } catch (err) { 
+        callback(null, { valid: false }); 
+    }
 }
+
 function startGrpcServer() {
     const server = new grpc.Server();
     server.addService(authProto.AuthService.service, { ValidateToken: validateToken });

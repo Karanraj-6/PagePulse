@@ -11,14 +11,12 @@ const app = express();
 app.use(express.json());
 
 // Enable CORS
-app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-    }
-    next();
-});
+import cors from 'cors';
+app.use(cors({
+    origin: ["http://localhost:5173"],
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+}));
 
 // --- Database Setup ---
 export const pool = new Pool({
@@ -37,6 +35,9 @@ async function initDB() {
 
             // Start Background Ingestion
             runIngestion().catch(err => console.error("[Ingestion] Background process failed:", err));
+
+            // Pre-populate Trending
+            prepopulateTrending().catch(err => console.error("[Trending] Init failed:", err));
             return;
         } catch (err) {
             retries++;
@@ -58,6 +59,7 @@ const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379');
 const GUTENDEX_BASE = "https://gutendex.com/books";
 
 // --- Helper: Trending Deque ---
+// --- Helper: Trending Deque ---
 async function addToTrending(book: any) {
     try {
         const bookStr = JSON.stringify(book);
@@ -67,6 +69,40 @@ async function addToTrending(book: any) {
         await redis.ltrim('trending_books', 0, 19);
     } catch (err) {
         console.error("Redis Trending Error:", err);
+    }
+}
+
+async function prepopulateTrending() {
+    try {
+        const exists = await redis.exists('trending_books');
+        if (exists) {
+            console.log('[Trending] Cache already exists. Skipping prepopulation.');
+            return;
+        }
+
+        console.log('[Trending] Cache empty. Pre-populating from DB...');
+        const result = await pool.query('SELECT * FROM books ORDER BY download_count DESC LIMIT 20');
+
+        if (result.rows.length === 0) {
+            console.log('[Trending] No books in DB to prepopulate.');
+            return;
+        }
+
+        // We push in reverse order so the highest download_count ends up at the HEAD (Index 0)
+        // LPUSH: [3rd] -> [2nd, 3rd] -> [1st, 2nd, 3rd]
+        const books = result.rows.reverse().map(row => ({
+            ...row,
+            authors: typeof row.authors === 'string' ? JSON.parse(row.authors) : row.authors,
+            formats: typeof row.formats === 'string' ? JSON.parse(row.formats) : row.formats
+        }));
+
+        for (const book of books) {
+            await redis.lpush('trending_books', JSON.stringify(book));
+        }
+
+        console.log(`[Trending] Pre-populated with ${books.length} top books.`);
+    } catch (err) {
+        console.error('[Trending] Pre-population failed:', err);
     }
 }
 
@@ -170,18 +206,44 @@ app.get('/books', async (req, res) => {
         }
 
         // --- B. Standard List / Category Filter ---
+        if (category && !search) {
+            const catName = String(category).trim();
+            const catKey = `category:${catName.toLowerCase()}`;
+
+            // 1. Check Redis Cache for Category
+            const cachedCat = await redis.get(catKey);
+            if (cachedCat) {
+                console.log(`[Cache] Hit for category: ${catName}`);
+                return res.json(JSON.parse(cachedCat));
+            }
+
+            // 2. Query DB
+            const sql = `
+                SELECT b.* FROM books b
+                JOIN book_categories bc ON b.id = bc.book_id
+                JOIN categories c ON bc.category_id = c.id
+                WHERE c.name ILIKE $1
+                ORDER BY b.download_count DESC
+                LIMIT 50
+            `;
+            const result = await pool.query(sql, [catName]);
+
+            const books = result.rows.map(row => ({
+                ...row,
+                authors: typeof row.authors === 'string' ? JSON.parse(row.authors) : row.authors,
+                formats: typeof row.formats === 'string' ? JSON.parse(row.formats) : row.formats
+            }));
+
+            // 3. Cache Result (1 Hour)
+            if (books.length > 0) {
+                await redis.set(catKey, JSON.stringify(books), 'EX', 3600);
+            }
+            return res.json(books);
+        }
+
+        // --- C. General List (No Category, No Search) ---
         let sql = 'SELECT * FROM books';
         const params: any[] = [];
-        let whereClauses: string[] = [];
-
-        if (category) {
-            whereClauses.push(`id IN (SELECT book_id FROM book_categories bc JOIN categories c ON bc.category_id = c.id WHERE c.name ILIKE $${params.length + 1})`);
-            params.push(category);
-        }
-
-        if (whereClauses.length > 0) {
-            sql += ' WHERE ' + whereClauses.join(' AND ');
-        }
 
         sql += ` ORDER BY download_count DESC LIMIT 20 OFFSET $${params.length + 1}`;
         params.push(offset);
@@ -197,6 +259,34 @@ app.get('/books', async (req, res) => {
 
     } catch (err: any) {
         console.error("Get Books Error:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
+// GET /books/:id (Metadata)
+app.get('/books/:id', async (req, res) => {
+    const bookId = parseInt(req.params.id);
+    if (isNaN(bookId)) return res.status(400).json({ error: "Invalid Book ID" });
+
+    try {
+        const result = await pool.query('SELECT * FROM books WHERE id = $1', [bookId]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: "Book not found" });
+        }
+
+        const row = result.rows[0];
+        const book = {
+            ...row,
+            authors: typeof row.authors === 'string' ? JSON.parse(row.authors) : row.authors,
+            formats: typeof row.formats === 'string' ? JSON.parse(row.formats) : row.formats,
+            subjects: typeof row.subjects === 'string' ? JSON.parse(row.subjects) : row.subjects,
+            bookshelves: typeof row.bookshelves === 'string' ? JSON.parse(row.bookshelves) : row.bookshelves,
+            languages: typeof row.languages === 'string' ? JSON.parse(row.languages) : row.languages
+        };
+
+        res.json(book);
+    } catch (err) {
+        console.error(`Get Book ${bookId} Error:`, err);
         res.status(500).json({ error: "Internal Server Error" });
     }
 });

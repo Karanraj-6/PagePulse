@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: book-service
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: book-service
@@ -14,15 +14,12 @@ spec:
     spec:
       containers:
       - name: book-service
-        image: book-service:latest
-        imagePullPolicy: IfNotPresent
+        image: book-service:v6
+        imagePullPolicy: Never
         resources:
           requests:
             cpu: "100m"
             memory: "128Mi"
-          limits:
-            cpu: "500m"
-            memory: "256Mi"
         ports:
         - containerPort: 3000
         - containerPort: 50051
@@ -47,18 +44,31 @@ spec:
             secretKeyRef:
               name: pagepulse-secrets
               key: DB_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: pagepulse-secrets
+              key: REDIS_URL
+        - name: REDIS_PORT
+          valueFrom:
+             configMapKeyRef:
+               name: pagepulse-config
+               key: REDIS_PORT
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: book-service
 spec:
+  type: NodePort
   selector:
     app: book-service
   ports:
   - name: http
     port: 3000
     targetPort: 3000
+    nodePort: 30003
   - name: grpc
     port: 50051
     targetPort: 50051
+    nodePort: 30004
