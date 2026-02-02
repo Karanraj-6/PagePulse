@@ -1,0 +1,30 @@
+# Dependencies (each service has its own node_modules inside Docker)
+**/node_modules/
+node_modules/
+
+# Git
+.git/
+.gitignore
+
+# Build artifacts
+**/dist/
+**/*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+**/*.tmp
+**/.DS_Store
+
+# Frontend (if separate)
+apps/web-client/node_modules/
+
+# EPUBs downloaded during ingestion (regenerated)
+services/book-service/epubs/
+
+# Test files
+**/__tests__/
+**/*.test.ts
+**/*.spec.ts

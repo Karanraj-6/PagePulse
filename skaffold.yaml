@@ -1,0 +1,35 @@
+apiVersion: skaffold/v4beta13
+kind: Config
+metadata:
+  name: pagepulse
+build:
+  artifacts:
+    - image: auth-service
+      context: .
+      docker:
+        dockerfile: services/auth-service/Dockerfile
+    - image: book-service
+      context: .
+      docker:
+        dockerfile: services/book-service/Dockerfile
+    - image: chat-service
+      context: .
+      docker:
+        dockerfile: services/chat-service/Dockerfile
+    - image: notification-service
+      context: .
+      docker:
+        dockerfile: services/notification-service/Dockerfile
+manifests:
+  rawYaml:
+    - k8s/ingress.yaml
+    - k8s/base/auth-service.yaml
+    - k8s/base/book-service.yaml
+    - k8s/base/chat-service.yaml
+    - k8s/base/config-map.yaml
+    - k8s/base/hpa.yaml
+    - k8s/base/notification-service.yaml
+    - k8s/base/secrets.yaml
+    - k8s/infrastructure/postgres.yaml
+    - k8s/infrastructure/rabbitmq.yaml
+    - k8s/infrastructure/redis.yaml

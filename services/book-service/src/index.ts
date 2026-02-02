@@ -38,6 +38,7 @@ async function initDB() {
 
             // Pre-populate Trending
             prepopulateTrending().catch(err => console.error("[Trending] Init failed:", err));
+            prepopulateCategories().catch(err => console.error("[Categories] Init failed:", err));
             return;
         } catch (err) {
             retries++;
@@ -73,18 +74,35 @@ async function addToTrending(book: any) {
 }
 
 async function prepopulateTrending() {
+    const LOCK_KEY = 'trending_books_lock';
+    const LOCK_TTL = 30; // 30 seconds lock
+
     try {
-        const exists = await redis.exists('trending_books');
-        if (exists) {
-            console.log('[Trending] Cache already exists. Skipping prepopulation.');
+        // Try to acquire a distributed lock
+        const lockAcquired = await redis.set(LOCK_KEY, '1', 'EX', LOCK_TTL, 'NX');
+        if (!lockAcquired) {
+            console.log('[Trending] Another pod is populating. Skipping.');
             return;
         }
 
-        console.log('[Trending] Cache empty. Pre-populating from DB...');
+        // Check if we have at least 20 trending books
+        const currentCount = await redis.llen('trending_books');
+        if (currentCount >= 20) {
+            console.log(`[Trending] Cache has ${currentCount} items. Skipping.`);
+            await redis.del(LOCK_KEY); // Release lock early
+            return;
+        }
+
+        console.log(`[Trending] Cache has only ${currentCount} items. Refreshing from DB...`);
+
+        // Clear existing incomplete data
+        await redis.del('trending_books');
+
         const result = await pool.query('SELECT * FROM books ORDER BY download_count DESC LIMIT 20');
 
         if (result.rows.length === 0) {
             console.log('[Trending] No books in DB to prepopulate.');
+            await redis.del(LOCK_KEY);
             return;
         }
 
@@ -100,9 +118,37 @@ async function prepopulateTrending() {
             await redis.lpush('trending_books', JSON.stringify(book));
         }
 
+        // Trim to exactly 20 (safety)
+        await redis.ltrim('trending_books', 0, 19);
+
         console.log(`[Trending] Pre-populated with ${books.length} top books.`);
+
+        // Release lock
+        await redis.del(LOCK_KEY);
     } catch (err) {
         console.error('[Trending] Pre-population failed:', err);
+        await redis.del(LOCK_KEY).catch(() => { }); // Clean up lock on error
+    }
+}
+
+async function prepopulateCategories() {
+    try {
+        const exists = await redis.exists('categories');
+        if (exists) {
+            console.log('[Categories] Cache already exists. Skipping.');
+            return;
+        }
+
+        console.log('[Categories] Cache empty. Pre-populating...');
+        const result = await pool.query('SELECT name FROM categories ORDER BY name ASC');
+        const categories = result.rows.map(r => r.name);
+
+        if (categories.length > 0) {
+            await redis.set('categories', JSON.stringify(categories), 'EX', 3600); // 1 hr cache
+            console.log(`[Categories] Cached ${categories.length} categories.`);
+        }
+    } catch (err) {
+        console.error('[Categories] Pre-population failed:', err);
     }
 }
 
@@ -160,11 +206,11 @@ app.get('/books', async (req, res) => {
                 return res.json(JSON.parse(cachedSearch));
             }
 
-            // 2. Check DB
+            // 2. Check DB - Cast authors (JSONB) to text for ILIKE
             const dbQuery = `
                 SELECT * 
                 FROM books 
-                WHERE title ILIKE $1 OR authors ILIKE $1 
+                WHERE title ILIKE $1 OR authors::text ILIKE $1 
                 LIMIT 20
             `;
             const dbRes = await pool.query(dbQuery, [`%${query}%`]);
@@ -301,33 +347,108 @@ app.get('/books/:id/pages', async (req, res) => {
     }
 
     try {
-        // 1. Fetch metadata
+        // 1. Fetch metadata from DB
         const bookRes = await pool.query('SELECT title, download_count FROM books WHERE id = $1', [bookId]);
+
+        // If book not in DB at all, try to fetch from Gutendex
         if ((bookRes.rowCount || 0) === 0) {
-            // TODO: Trigger async fetch if missing (User flow)
-            // For now, return 404 if not found in DB
-            return res.status(404).json({ error: "Book not found. It may be ingesting." });
-        }
-        const book = bookRes.rows[0];
+            // Check if ingestion is already in progress
+            const ingestionStatus = await redis.get(`ingestion:${bookId}`);
+            if (ingestionStatus === 'processing') {
+                return res.status(202).json({
+                    status: 'processing',
+                    message: 'Book is being ingested. Please wait...',
+                    book_id: bookId,
+                    estimated_time: '15-30 seconds'
+                });
+            }
 
-        // 2. Fetch pages
-        const pagesRes = await pool.query(
-            'SELECT page_number, html FROM book_pages WHERE book_id = $1 ORDER BY page_number ASC',
-            [bookId]
-        );
+            // Start async ingestion
+            console.log(`[On-Demand] Book ${bookId} not found. Triggering ingestion...`);
+            await redis.set(`ingestion:${bookId}`, 'processing', 'EX', 300); // 5 min TTL
 
-        if ((pagesRes.rowCount || 0) === 0) {
+            // Import and run ingestion (fire and forget, but we'll wait a bit)
+            const { ingestBookById } = await import('./ingestion/worker');
+
+            // Run ingestion asynchronously
+            ingestBookById(bookId).then(async (result) => {
+                if (result.success) {
+                    await redis.set(`ingestion:${bookId}`, 'complete', 'EX', 60);
+                } else {
+                    await redis.set(`ingestion:${bookId}`, `failed:${result.message}`, 'EX', 60);
+                }
+            }).catch(async (err) => {
+                await redis.set(`ingestion:${bookId}`, `failed:${err.message}`, 'EX', 60);
+            });
+
             return res.status(202).json({
-                message: "Book metadata exists but pages are processing.",
-                book_id: bookId
+                status: 'started',
+                message: 'Ingestion started. Please retry in 15-30 seconds.',
+                book_id: bookId,
+                estimated_time: '15-30 seconds'
             });
         }
 
-        // 3. Construct response
+        const book = bookRes.rows[0];
+
+        // Pagination params (default: first 20 pages)
+        const limit = Math.min(parseInt(req.query.limit as string) || 20, 50); // Max 50 per request
+        const offset = parseInt(req.query.offset as string) || 0;
+
+        // 2. Get total page count
+        const countRes = await pool.query(
+            'SELECT COUNT(*) FROM book_pages WHERE book_id = $1',
+            [bookId]
+        );
+        const totalPages = parseInt(countRes.rows[0].count);
+
+        if (totalPages === 0) {
+            // Check if ingestion is in progress
+            const ingestionStatus = await redis.get(`ingestion:${bookId}`);
+            if (ingestionStatus === 'processing') {
+                return res.status(202).json({
+                    status: 'processing',
+                    message: 'Book is being ingested. Please wait...',
+                    book_id: bookId,
+                    estimated_time: '15-30 seconds'
+                });
+            }
+
+            // Start ingestion for book that has metadata but no pages
+            console.log(`[On-Demand] Book ${bookId} has metadata but no pages. Triggering ingestion...`);
+            await redis.set(`ingestion:${bookId}`, 'processing', 'EX', 300);
+
+            const { ingestBookById } = await import('./ingestion/worker');
+            ingestBookById(bookId).then(async (result) => {
+                if (result.success) {
+                    await redis.set(`ingestion:${bookId}`, 'complete', 'EX', 60);
+                } else {
+                    await redis.set(`ingestion:${bookId}`, `failed:${result.message}`, 'EX', 60);
+                }
+            });
+
+            return res.status(202).json({
+                status: 'started',
+                message: 'Ingestion started. Please retry in 15-30 seconds.',
+                book_id: bookId,
+                estimated_time: '15-30 seconds'
+            });
+        }
+
+        // 3. Fetch paginated pages
+        const pagesRes = await pool.query(
+            'SELECT page_number, html FROM book_pages WHERE book_id = $1 ORDER BY page_number ASC LIMIT $2 OFFSET $3',
+            [bookId, limit, offset]
+        );
+
+        // 4. Construct response
         const response = {
             book_id: bookId,
             title: book.title,
-            total_pages: pagesRes.rowCount || 0,
+            total_pages: totalPages,
+            limit,
+            offset,
+            has_more: offset + limit < totalPages,
             pages: pagesRes.rows.map((row: any) => ({
                 page: row.page_number,
                 html: row.html
@@ -340,6 +461,42 @@ app.get('/books/:id/pages', async (req, res) => {
         console.error(`Error fetching pages for ${bookId}:`, error);
         res.status(500).json({ error: error.message });
     }
+});
+
+// GET /books/:id/ingestion-status - Check ingestion progress
+app.get('/books/:id/ingestion-status', async (req, res) => {
+    const bookId = parseInt(req.params.id);
+    if (isNaN(bookId)) {
+        return res.status(400).json({ error: "Invalid Book ID" });
+    }
+
+    const status = await redis.get(`ingestion:${bookId}`);
+
+    if (!status) {
+        // Check if book has pages
+        const countRes = await pool.query('SELECT COUNT(*) FROM book_pages WHERE book_id = $1', [bookId]);
+        const pageCount = parseInt(countRes.rows[0].count);
+
+        if (pageCount > 0) {
+            return res.json({ status: 'complete', page_count: pageCount });
+        }
+        return res.json({ status: 'not_started' });
+    }
+
+    if (status === 'complete') {
+        const countRes = await pool.query('SELECT COUNT(*) FROM book_pages WHERE book_id = $1', [bookId]);
+        return res.json({ status: 'complete', page_count: parseInt(countRes.rows[0].count) });
+    }
+
+    if (status === 'processing') {
+        return res.json({ status: 'processing', message: 'Book is being ingested...' });
+    }
+
+    if (status.startsWith('failed:')) {
+        return res.json({ status: 'failed', error: status.replace('failed:', '') });
+    }
+
+    res.json({ status });
 });
 
 

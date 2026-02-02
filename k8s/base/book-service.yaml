@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: book-service
-        image: book-service:v6
+        image: book-service:v7
         imagePullPolicy: Never
         resources:
           requests:

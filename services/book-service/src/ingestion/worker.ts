@@ -73,8 +73,40 @@ async function ingestBook(book: any) {
 
     } catch (err) {
         console.error(`[Ingestion] Failed to ingest book ${book.id}:`, err);
+        throw err;
     } finally {
         client.release();
+    }
+}
+
+// On-demand ingestion for a single book by ID
+export async function ingestBookById(bookId: number): Promise<{ success: boolean; message: string }> {
+    console.log(`[On-Demand] Fetching book ${bookId} from Gutendex...`);
+
+    try {
+        // Check if already has pages
+        const existingPages = await pool.query('SELECT COUNT(*) FROM book_pages WHERE book_id = $1', [bookId]);
+        if (parseInt(existingPages.rows[0].count) > 0) {
+            console.log(`[On-Demand] Book ${bookId} already has pages. Skipping.`);
+            return { success: true, message: 'Already ingested' };
+        }
+
+        // Fetch from Gutendex
+        const { data } = await axios.get(`${GUTENDEX}${bookId}`);
+
+        if (!data || !data.id) {
+            return { success: false, message: 'Book not found on Gutendex' };
+        }
+
+        // Ingest the book
+        await ingestBook(data);
+
+        console.log(`[On-Demand] Successfully ingested book ${bookId}`);
+        return { success: true, message: 'Ingestion complete' };
+
+    } catch (error: any) {
+        console.error(`[On-Demand] Failed to ingest book ${bookId}:`, error.message);
+        return { success: false, message: error.message };
     }
 }
 
@@ -171,24 +203,68 @@ function paginate(html: string): string[] {
     const document = dom.window.document;
 
     const pages: string[] = [];
-    let current = "";
-    let height = 0;
+    let currentPage: string[] = [];
+    let currentCharCount = 0;
 
-    for (const node of Array.from(document.body.children)) {
-        current += node.outerHTML;
-        height += 120; // rough heuristic
+    // Target ~1200 characters per page (fits in 600px iframe height)
+    const CHARS_PER_PAGE = 1200;
 
-        if (height >= PAGE_HEIGHT) {
-            pages.push(current);
-            current = "";
-            height = 0;
+    // Process each top-level element (paragraphs, headings, divs, etc.)
+    for (const node of Array.from(document.body.children) as HTMLElement[]) {
+        const nodeHtml = node.outerHTML;
+        const nodeTextLength = node.textContent?.length || 0;
+
+        // If this single element is huge, we need to split it
+        if (nodeTextLength > CHARS_PER_PAGE) {
+            // First, push current page if it has content
+            if (currentPage.length > 0) {
+                pages.push(currentPage.join(''));
+                currentPage = [];
+                currentCharCount = 0;
+            }
+
+            // Split large element by sentences
+            const text = node.innerHTML;
+            const sentences = text.split(/(?<=[.!?])\s+/);
+            let chunk = '';
+
+            for (const sentence of sentences) {
+                if ((chunk.length + sentence.length) > CHARS_PER_PAGE && chunk.length > 0) {
+                    pages.push(`<${node.tagName.toLowerCase()}>${chunk}</${node.tagName.toLowerCase()}>`);
+                    chunk = sentence;
+                } else {
+                    chunk += (chunk ? ' ' : '') + sentence;
+                }
+            }
+
+            if (chunk) {
+                currentPage.push(`<${node.tagName.toLowerCase()}>${chunk}</${node.tagName.toLowerCase()}>`);
+                currentCharCount = chunk.length;
+            }
+        } else if (currentCharCount + nodeTextLength > CHARS_PER_PAGE && currentPage.length > 0) {
+            // Current page is full, start new page
+            pages.push(currentPage.join(''));
+            currentPage = [nodeHtml];
+            currentCharCount = nodeTextLength;
+        } else {
+            // Add to current page
+            currentPage.push(nodeHtml);
+            currentCharCount += nodeTextLength;
         }
     }
 
-    if (current) pages.push(current);
-    // If no children but text content exists, push it
+    // Push remaining content
+    if (currentPage.length > 0) {
+        pages.push(currentPage.join(''));
+    }
+
+    // Fallback: if no structured content, just push raw HTML
     if (pages.length === 0 && document.body.innerHTML.trim().length > 0) {
-        pages.push(document.body.innerHTML);
+        const fullText = document.body.innerHTML;
+        // Split into chunks
+        for (let i = 0; i < fullText.length; i += CHARS_PER_PAGE) {
+            pages.push(fullText.slice(i, i + CHARS_PER_PAGE));
+        }
     }
 
     return pages;
