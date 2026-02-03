@@ -24,7 +24,6 @@ const io = new Server(httpServer, {
         methods: ["GET", "POST"],
         credentials: true
     }
-}
 });
 
 // --- gRPC Client Setup ---
@@ -102,18 +101,18 @@ app.post('/private', async (req, res) => {
     }
 
     try {
-        try {
-            // A. Check for Blocked Status (gRPC)
-            const isBlocked = await checkBlockStatusMap(myId, targetUserId);
 
-            if (isBlocked) {
-                return res.status(403).json({ error: "Cannot create chat: User is blocked" });
-            }
+        // A. Check for Blocked Status (gRPC)
+        const isBlocked = await checkBlockStatusMap(myId, targetUserId);
+
+        if (isBlocked) {
+            return res.status(403).json({ error: "Cannot create chat: User is blocked" });
+        }
 
 
 
-            // B. Check for existing private conversation
-            const existingRes = await pool.query(`
+        // B. Check for existing private conversation
+        const existingRes = await pool.query(`
             SELECT c.conversation_id 
             FROM conversations c
             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id
@@ -123,28 +122,28 @@ app.post('/private', async (req, res) => {
               AND cp2.user_id = $2
         `, [myId, targetUserId]);
 
-            if (existingRes.rows.length > 0) {
-                return res.json({ conversationId: existingRes.rows[0].conversation_id, created: false });
-            }
-
-            // C. Create new conversation
-            const newConvId = crypto.randomUUID();
-            const now = new Date();
-
-            await pool.query('BEGIN');
-            await pool.query('INSERT INTO conversations (conversation_id, type, created_at) VALUES ($1, $2, $3)', [newConvId, 'private', now]);
-            await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, myId]);
-            await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, targetUserId]);
-            await pool.query('COMMIT');
-
-            return res.json({ conversationId: newConvId, created: true });
-
-        } catch (err) {
-            await pool.query('ROLLBACK');
-            console.error("Error creating private chat:", err);
-            res.status(500).json({ error: "Internal Server Error" });
+        if (existingRes.rows.length > 0) {
+            return res.json({ conversationId: existingRes.rows[0].conversation_id, created: false });
         }
-    });
+
+        // C. Create new conversation
+        const newConvId = crypto.randomUUID();
+        const now = new Date();
+
+        await pool.query('BEGIN');
+        await pool.query('INSERT INTO conversations (conversation_id, type, created_at) VALUES ($1, $2, $3)', [newConvId, 'private', now]);
+        await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, myId]);
+        await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, targetUserId]);
+        await pool.query('COMMIT');
+
+        return res.json({ conversationId: newConvId, created: true });
+
+    } catch (err) {
+        await pool.query('ROLLBACK');
+        console.error("Error creating private chat:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
 
 // 2. Initiate/Invite Book Session
 app.post('/reading', async (req, res) => {
@@ -273,10 +272,43 @@ io.on('connection', (socket) => {
         });
     });
 
+    // --- Public Book Room Events ---
+    socket.on('join_book_room', (data: { bookId: string | number, userId: string }) => {
+        const { bookId, userId } = data;
+        const roomName = `book_${bookId}`;
+        socket.join(roomName);
+        console.log(`User ${userId} joined public book room ${roomName}`);
+
+        // Notify others in the room
+        socket.to(roomName).emit('user_joined_book', { userId, count: io.sockets.adapter.rooms.get(roomName)?.size || 0 });
+
+        // Store room on socket for disconnect handling
+        (socket as any).bookRoom = roomName;
+        (socket as any).userId = userId; // Ensure userId is set
+    });
+
+    socket.on('leave_book_room', (data: { bookId: string | number, userId: string }) => {
+        const { bookId, userId } = data;
+        const roomName = `book_${bookId}`;
+        socket.leave(roomName);
+        console.log(`User ${userId} left public book room ${roomName}`);
+
+        socket.to(roomName).emit('user_left_book', { userId, count: io.sockets.adapter.rooms.get(roomName)?.size || 0 });
+        delete (socket as any).bookRoom;
+    });
+
     socket.on('disconnect', () => {
         console.log('User disconnected:', socket.id);
         const userId = (socket as any).userId;
+        const bookRoom = (socket as any).bookRoom;
 
+        // 1. Handle Public Book Room Disconnect
+        if (bookRoom && userId) {
+            console.log(`[BookRoom] User ${userId} disconnected from ${bookRoom}`);
+            io.to(bookRoom).emit('user_left_book', { userId, count: io.sockets.adapter.rooms.get(bookRoom)?.size || 0 });
+        }
+
+        // 2. Handle Private/Reading Session Disconnects
         if (userId) {
             // Check if host of any active session
             for (const [cid, session] of activeSessions.entries()) {
