@@ -4,6 +4,8 @@ package auth;
 
 service AuthService {
   rpc ValidateToken (ValidateTokenRequest) returns (UserResponse);
+  rpc CheckBlockStatus (BlockStatusRequest) returns (BlockStatusResponse);
+  rpc GetUserByUsername (GetUserByUsernameRequest) returns (UserIdResponse);
 }
 
 message ValidateTokenRequest {
@@ -15,4 +17,22 @@ message UserResponse {
   string email = 2;
   string role = 3;
   bool valid = 4;
+}
+
+message BlockStatusRequest {
+  string user_id = 1;
+  string target_user_id = 2;
+}
+
+message BlockStatusResponse {
+  bool is_blocked = 1;
+}
+
+message GetUserByUsernameRequest {
+  string username = 1;
+}
+
+message UserIdResponse {
+  string user_id = 1;
+  bool found = 2;
 }

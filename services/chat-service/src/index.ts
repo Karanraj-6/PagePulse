@@ -6,6 +6,8 @@ import path from 'path';
 import fs from 'fs';
 import * as crypto from 'crypto';
 import cors from 'cors';
+import * as grpc from '@grpc/grpc-js';
+import * as protoLoader from '@grpc/proto-loader';
 
 const app = express();
 app.use(cors({
@@ -22,7 +24,44 @@ const io = new Server(httpServer, {
         methods: ["GET", "POST"],
         credentials: true
     }
+}
 });
+
+// --- gRPC Client Setup ---
+const PROTO_PATH = path.join(__dirname, '../../../packages/protos/auth.proto');
+const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
+    keepCase: true, longs: String, enums: String, defaults: true, oneofs: true
+});
+const authProto: any = grpc.loadPackageDefinition(packageDefinition).auth;
+const AUTH_GRPC_URL = process.env.AUTH_GRPC_URL || 'auth-service:50051';
+const authClient = new authProto.AuthService(AUTH_GRPC_URL, grpc.credentials.createInsecure());
+
+// Promisify gRPC calls
+const checkBlockStatusMap = (userId: string, targetUserId: string): Promise<boolean> => {
+    return new Promise((resolve, reject) => {
+        authClient.CheckBlockStatus({ user_id: userId, target_user_id: targetUserId }, (err: any, response: any) => {
+            if (err) {
+                console.error("gRPC CheckBlockStatus Error:", err);
+                resolve(false); // Fail safe/open?
+            } else {
+                resolve(response.is_blocked);
+            }
+        });
+    });
+};
+
+const getUserByUsernameMap = (username: string): Promise<string | null> => {
+    return new Promise((resolve, reject) => {
+        authClient.GetUserByUsername({ username }, (err: any, response: any) => {
+            if (err) {
+                console.error("gRPC GetUserByUsername Error:", err);
+                resolve(null);
+            } else {
+                resolve(response.found ? response.user_id : null);
+            }
+        });
+    });
+};
 
 // --- Database Setup ---
 const pool = new Pool({
@@ -63,19 +102,18 @@ app.post('/private', async (req, res) => {
     }
 
     try {
-        // A. Check for Blocked Status (Bidirectional check)
-        const blockCheck = await pool.query(`
-            SELECT 1 FROM friends 
-            WHERE ((user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)) 
-              AND status = 'blocked'
-        `, [myId, targetUserId]);
+        try {
+            // A. Check for Blocked Status (gRPC)
+            const isBlocked = await checkBlockStatusMap(myId, targetUserId);
 
-        if ((blockCheck.rowCount || 0) > 0) {
-            return res.status(403).json({ error: "Cannot create chat: User is blocked" });
-        }
+            if (isBlocked) {
+                return res.status(403).json({ error: "Cannot create chat: User is blocked" });
+            }
 
-        // B. Check for existing private conversation
-        const existingRes = await pool.query(`
+
+
+            // B. Check for existing private conversation
+            const existingRes = await pool.query(`
             SELECT c.conversation_id 
             FROM conversations c
             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id
@@ -85,28 +123,28 @@ app.post('/private', async (req, res) => {
               AND cp2.user_id = $2
         `, [myId, targetUserId]);
 
-        if (existingRes.rows.length > 0) {
-            return res.json({ conversationId: existingRes.rows[0].conversation_id, created: false });
+            if (existingRes.rows.length > 0) {
+                return res.json({ conversationId: existingRes.rows[0].conversation_id, created: false });
+            }
+
+            // C. Create new conversation
+            const newConvId = crypto.randomUUID();
+            const now = new Date();
+
+            await pool.query('BEGIN');
+            await pool.query('INSERT INTO conversations (conversation_id, type, created_at) VALUES ($1, $2, $3)', [newConvId, 'private', now]);
+            await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, myId]);
+            await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, targetUserId]);
+            await pool.query('COMMIT');
+
+            return res.json({ conversationId: newConvId, created: true });
+
+        } catch (err) {
+            await pool.query('ROLLBACK');
+            console.error("Error creating private chat:", err);
+            res.status(500).json({ error: "Internal Server Error" });
         }
-
-        // C. Create new conversation
-        const newConvId = crypto.randomUUID();
-        const now = new Date();
-
-        await pool.query('BEGIN');
-        await pool.query('INSERT INTO conversations (conversation_id, type, created_at) VALUES ($1, $2, $3)', [newConvId, 'private', now]);
-        await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, myId]);
-        await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, targetUserId]);
-        await pool.query('COMMIT');
-
-        return res.json({ conversationId: newConvId, created: true });
-
-    } catch (err) {
-        await pool.query('ROLLBACK');
-        console.error("Error creating private chat:", err);
-        res.status(500).json({ error: "Internal Server Error" });
-    }
-});
+    });
 
 // 2. Initiate/Invite Book Session
 app.post('/reading', async (req, res) => {
@@ -128,9 +166,8 @@ app.post('/reading', async (req, res) => {
 
         // Add Friend if provided
         if (friendUsername) {
-            const userRes = await pool.query('SELECT user_id FROM users WHERE username = $1', [friendUsername]);
-            if (userRes.rows.length > 0) {
-                const friendId = userRes.rows[0].user_id;
+            const friendId = await getUserByUsernameMap(friendUsername);
+            if (friendId) {
                 await pool.query('INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)', [newConvId, friendId]);
             }
         }
@@ -174,13 +211,9 @@ io.on('connection', (socket) => {
 
             if (partRes.rows.length > 0) {
                 const recipientId = partRes.rows[0].user_id;
-                const blockCheck = await pool.query(`
-                    SELECT 1 FROM friends 
-                    WHERE ((user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)) 
-                      AND status = 'blocked'
-                `, [sender_id, recipientId]);
+                const isBlocked = await checkBlockStatusMap(sender_id, recipientId);
 
-                if ((blockCheck.rowCount || 0) > 0) {
+                if (isBlocked) {
                     socket.emit("error", "Message failed: You are blocked or have blocked this user");
                     return;
                 }

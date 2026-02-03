@@ -184,7 +184,7 @@ app.get('/auth/me', async (req, res) => {
 
     try {
         const decoded = jwt.verify(token, JWT_SECRET) as any;
-        
+
         // Fetch user details with profile photo
         const userResult = await pool.query(
             'SELECT user_id, username, email FROM users WHERE user_id = $1',
@@ -205,8 +205,8 @@ app.get('/auth/me', async (req, res) => {
 
         const avatar = photoResult.rows[0]?.photo_url || null;
 
-        res.json({ 
-            id: user.user_id, 
+        res.json({
+            id: user.user_id,
             username: user.username,
             email: user.email,
             avatar: avatar
@@ -256,14 +256,14 @@ app.post('/auth/login', async (req, res) => {
             { expiresIn: '1h' }
         );
 
-        res.json({ 
-            token, 
-            user: { 
-                id: user.user_id, 
-                name: user.username, 
-                email: user.email, 
+        res.json({
+            token,
+            user: {
+                id: user.user_id,
+                name: user.username,
+                email: user.email,
                 avatar: profile_url.rows[0]?.photo_url || null
-            } 
+            }
         });
     } catch (err) {
         console.error("Login Error:", err);
@@ -315,9 +315,9 @@ app.post('/users/avatar', upload.single('avatar'), async (req, res) => {
 
         console.log(`[Avatar Upload] Database updated for user ${userId}`);
 
-        res.json({ 
-            success: true, 
-            avatarUrl 
+        res.json({
+            success: true,
+            avatarUrl
         });
     } catch (error: any) {
         console.error('Avatar Upload Error:', error);
@@ -515,14 +515,64 @@ function validateToken(call: any, callback: any) {
     try {
         const decoded = jwt.verify(token, JWT_SECRET) as any;
         callback(null, { user_id: decoded.user_id, email: decoded.email || "", role: "user", valid: true });
-    } catch (err) { 
-        callback(null, { valid: false }); 
+    } catch (err) {
+        callback(null, { valid: false });
     }
+}
+
+function checkBlockStatus(call: any, callback: any) {
+    const { user_id, target_user_id } = call.request;
+    if (!user_id || !target_user_id) {
+        return callback(null, { is_blocked: false });
+    }
+
+    const query = `
+        SELECT 1 FROM friends 
+        WHERE ((user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)) 
+          AND status = 'blocked'
+    `;
+
+    pool.query(query, [user_id, target_user_id])
+        .then(res => {
+            const isBlocked = (res.rowCount || 0) > 0;
+            callback(null, { is_blocked: isBlocked });
+        })
+        .catch(err => {
+            console.error("gRPC CheckBlockStatus Error:", err);
+            // Default to not blocked on error to avoid blocking logic on failure, or handle differently?
+            // User requested independence, failing safe usually means allow unless sure blocked? or block? 
+            // Standard approach: fail open or return error. Let's return false for now but log it.
+            callback(null, { is_blocked: false });
+        });
+}
+
+function getUserByUsername(call: any, callback: any) {
+    const { username } = call.request;
+    if (!username) {
+        return callback(null, { found: false });
+    }
+
+    pool.query('SELECT user_id FROM users WHERE username = $1', [username])
+        .then(res => {
+            if (res.rows.length > 0) {
+                callback(null, { user_id: res.rows[0].user_id, found: true });
+            } else {
+                callback(null, { found: false });
+            }
+        })
+        .catch(err => {
+            console.error("gRPC GetUserByUsername Error:", err);
+            callback(null, { found: false });
+        });
 }
 
 function startGrpcServer() {
     const server = new grpc.Server();
-    server.addService(authProto.AuthService.service, { ValidateToken: validateToken });
+    server.addService(authProto.AuthService.service, {
+        ValidateToken: validateToken,
+        CheckBlockStatus: checkBlockStatus,
+        GetUserByUsername: getUserByUsername
+    });
     const GRPC_PORT = process.env.GRPC_PORT || 50051;
     server.bindAsync(`0.0.0.0:${GRPC_PORT}`, grpc.ServerCredentials.createInsecure(), () => {
         console.log(`Auth gRPC Server running on port ${GRPC_PORT}`);

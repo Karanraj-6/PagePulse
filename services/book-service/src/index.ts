@@ -60,16 +60,49 @@ const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379');
 const GUTENDEX_BASE = "https://gutendex.com/books";
 
 // --- Helper: Trending Deque ---
-// --- Helper: Trending Deque ---
+// If book exists, remove it first, then add to front (most recently clicked)
 async function addToTrending(book: any) {
     try {
-        const bookStr = JSON.stringify(book);
-        // Push to head
+        const bookId = Number(book.id);
+        console.log(`[Trending] Processing book ${bookId}: ${book.title}`);
+
+        // 1. Get current list
+        const currentList = await redis.lrange('trending_books', 0, -1);
+        console.log(`[Trending] Current list has ${currentList.length} items`);
+
+        // 2. Find and remove existing entry with same ID
+        for (const item of currentList) {
+            try {
+                const parsed = JSON.parse(item);
+                const parsedId = Number(parsed.id);
+
+                if (parsedId === bookId) {
+                    const removed = await redis.lrem('trending_books', 0, item); // Remove ALL occurrences
+                    console.log(`[Trending] Removed ${removed} duplicate(s) of book ${bookId}`);
+                    break;
+                }
+            } catch (e) {
+                // Skip invalid JSON entries
+                console.error('[Trending] Invalid JSON in list:', e);
+            }
+        }
+
+        // 3. Add to front (left side)
+        const bookStr = JSON.stringify({
+            id: bookId,
+            title: book.title,
+            authors: book.authors,
+            formats: book.formats,
+            download_count: book.download_count
+        });
         await redis.lpush('trending_books', bookStr);
-        // Trim to size 20
+
+        // 4. Trim to max 20 items
         await redis.ltrim('trending_books', 0, 19);
+
+        console.log(`[Trending] Added book ${bookId}: "${book.title}" to front`);
     } catch (err) {
-        console.error("Redis Trending Error:", err);
+        console.error("[Trending] Error:", err);
     }
 }
 
@@ -189,6 +222,37 @@ app.get('/books/trending', async (req, res) => {
     }
 });
 
+// POST /books/:id/track - Add to trending when user clicks on a book
+// Frontend calls this when navigating from SearchPage to BookDetailsPage
+app.post('/books/:id/track', async (req, res) => {
+    const bookId = parseInt(req.params.id);
+    if (isNaN(bookId)) {
+        return res.status(400).json({ error: "Invalid Book ID" });
+    }
+
+    try {
+        // Book data comes from frontend (already has the data from search)
+        const { title, authors, formats, download_count } = req.body;
+
+        if (!title) {
+            return res.status(400).json({ error: "Book title is required" });
+        }
+
+        await addToTrending({
+            id: bookId,
+            title,
+            authors: authors || [],
+            formats: formats || {},
+            download_count: download_count || 0
+        });
+
+        res.json({ success: true, message: `Book ${bookId} added to trending` });
+    } catch (err) {
+        console.error("[Track] Error:", err);
+        res.status(500).json({ error: "Failed to track book" });
+    }
+});
+
 // GET /books (List & Search)
 app.get('/books', async (req, res) => {
     const { page = 1, category, search } = req.query;
@@ -206,14 +270,16 @@ app.get('/books', async (req, res) => {
                 return res.json(JSON.parse(cachedSearch));
             }
 
-            // 2. Check DB - Cast authors (JSONB) to text for ILIKE
+            // 2. Check DB - Use trigram similarity for fuzzy search
             const dbQuery = `
-                SELECT * 
+                SELECT *, 
+                       GREATEST(similarity(title, $1), similarity(authors::text, $1)) as score
                 FROM books 
-                WHERE title ILIKE $1 OR authors::text ILIKE $1 
+                WHERE title % $1 OR authors::text ILIKE $2
+                ORDER BY score DESC
                 LIMIT 20
             `;
-            const dbRes = await pool.query(dbQuery, [`%${query}%`]);
+            const dbRes = await pool.query(dbQuery, [query, `%${query}%`]);
 
             if (dbRes.rows.length > 0) {
                 const results = dbRes.rows.map(row => ({
@@ -223,20 +289,18 @@ app.get('/books', async (req, res) => {
                 }));
 
                 await redis.set(cacheKey, JSON.stringify(results), 'EX', 600); // 10 mins
-                if (results[0]) await addToTrending(results[0]);
+                // Trending is now added when user clicks on book, not on search
                 return res.json(results);
             }
 
             // 3. Gutendex API (Fallback)
             console.log(`[Search] Fallback to Gutendex for: ${query}`);
             const apiRes = await axios.get(`${GUTENDEX_BASE}?search=${encodeURIComponent(query)}`);
-            const apiBooks = apiRes.data.results; // Gutendex structure
+            const apiBooks = apiRes.data.results.slice(0, 20); // Limit to 20 results
 
             if (apiBooks.length > 0) {
                 // Return immediately, caching logic handles persistence later/async if needed
-                // User requirement: "store in redisdb trending deque"
-                const topBook = apiBooks[0];
-                await addToTrending(topBook);
+                // Trending is now added when user clicks on book, not on search
 
                 // Cache the API result
                 await redis.set(cacheKey, JSON.stringify(apiBooks), 'EX', 600);
@@ -309,14 +373,35 @@ app.get('/books', async (req, res) => {
     }
 });
 
-// GET /books/:id (Metadata)
+// GET /books/:id (Metadata) - BookDetailsPage
+// Adds to trending when user clicks on a book
 app.get('/books/:id', async (req, res) => {
     const bookId = parseInt(req.params.id);
     if (isNaN(bookId)) return res.status(400).json({ error: "Invalid Book ID" });
 
     try {
-        const result = await pool.query('SELECT * FROM books WHERE id = $1', [bookId]);
+        let result = await pool.query('SELECT * FROM books WHERE id = $1', [bookId]);
+
+        // If not in DB, fetch from Gutendex
         if (result.rows.length === 0) {
+            console.log(`[BookDetails] Book ${bookId} not in DB, fetching from Gutendex...`);
+            try {
+                const apiRes = await axios.get(`${GUTENDEX_BASE.replace('?search=', '')}${bookId}`);
+                if (apiRes.data && apiRes.data.id) {
+                    const book = apiRes.data;
+                    // Add to trending (clicked on book)
+                    await addToTrending({
+                        id: book.id,
+                        title: book.title,
+                        authors: book.authors,
+                        formats: book.formats,
+                        download_count: book.download_count
+                    });
+                    return res.json(book);
+                }
+            } catch (apiErr) {
+                console.error(`[BookDetails] Gutendex fetch failed:`, apiErr);
+            }
             return res.status(404).json({ error: "Book not found" });
         }
 
@@ -329,6 +414,15 @@ app.get('/books/:id', async (req, res) => {
             bookshelves: typeof row.bookshelves === 'string' ? JSON.parse(row.bookshelves) : row.bookshelves,
             languages: typeof row.languages === 'string' ? JSON.parse(row.languages) : row.languages
         };
+
+        // Add to trending when user views book details
+        await addToTrending({
+            id: book.id,
+            title: book.title,
+            authors: book.authors,
+            formats: book.formats,
+            download_count: book.download_count
+        });
 
         res.json(book);
     } catch (err) {
@@ -347,8 +441,8 @@ app.get('/books/:id/pages', async (req, res) => {
     }
 
     try {
-        // 1. Fetch metadata from DB
-        const bookRes = await pool.query('SELECT title, download_count FROM books WHERE id = $1', [bookId]);
+        // 1. Fetch metadata from DB (include authors/formats for trending)
+        const bookRes = await pool.query('SELECT title, authors, formats, download_count FROM books WHERE id = $1', [bookId]);
 
         // If book not in DB at all, try to fetch from Gutendex
         if ((bookRes.rowCount || 0) === 0) {
@@ -455,6 +549,7 @@ app.get('/books/:id/pages', async (req, res) => {
             }))
         };
 
+        // Trending is now handled in GET /books/:id (BookDetailsPage)
         res.json(response);
 
     } catch (error: any) {
