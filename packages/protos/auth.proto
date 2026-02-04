@@ -6,6 +6,13 @@ service AuthService {
   rpc ValidateToken (ValidateTokenRequest) returns (UserResponse);
   rpc CheckBlockStatus (BlockStatusRequest) returns (BlockStatusResponse);
   rpc GetUserByUsername (GetUserByUsernameRequest) returns (UserIdResponse);
+  rpc GetUserById (GetUserByIdRequest) returns (UserInfoResponse);
+  rpc CheckFriendship (FriendshipRequest) returns (FriendshipResponse);
+  rpc GetFriendsList (GetFriendsRequest) returns (FriendsListResponse);
+  // Friend actions
+  rpc AcceptFriend (FriendActionRequest) returns (FriendActionResponse);
+  rpc BlockUser (FriendActionRequest) returns (FriendActionResponse);
+  rpc RejectFriend (FriendActionRequest) returns (FriendActionResponse);
 }
 
 message ValidateTokenRequest {
@@ -35,4 +42,43 @@ message GetUserByUsernameRequest {
 message UserIdResponse {
   string user_id = 1;
   bool found = 2;
+}
+
+message FriendshipRequest {
+  string user_id = 1;
+  string target_user_id = 2;
+}
+
+message FriendshipResponse {
+  bool is_friend = 1;
+}
+
+message GetFriendsRequest {
+  string user_id = 1;
+}
+
+message FriendsListResponse {
+  repeated string friend_ids = 1;
+}
+
+message GetUserByIdRequest {
+  string user_id = 1;
+}
+
+message UserInfoResponse {
+  string user_id = 1;
+  string username = 2;
+  string email = 3;
+  bool found = 4;
+}
+
+message FriendActionRequest {
+  string user_id = 1;       // The user performing the action (accepter/blocker)
+  string target_id = 2;     // The other user (requester)
+}
+
+message FriendActionResponse {
+  bool success = 1;
+  string message = 2;
+  string new_status = 3;    // 'accepted', 'blocked', 'removed'
 }

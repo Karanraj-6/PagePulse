@@ -7,19 +7,54 @@ build:
     - image: auth-service
       context: .
       docker:
-        dockerfile: services/auth-service/Dockerfile
+        dockerfile: services/auth-service/Dockerfile.dev
+      sync:
+        manual:
+          - src: "services/auth-service/src/**/*.ts"
+            dest: /usr/src/app/services/auth-service/src
+          - src: "services/auth-service/src/**/*.sql"
+            dest: /usr/src/app/services/auth-service/src
     - image: book-service
       context: .
       docker:
-        dockerfile: services/book-service/Dockerfile
+        dockerfile: services/book-service/Dockerfile.dev
+      sync:
+        manual:
+          - src: "services/book-service/src/**/*.ts"
+            dest: /usr/src/app/services/book-service/src
+          - src: "services/book-service/src/**/*.sql"
+            dest: /usr/src/app/services/book-service/src
     - image: chat-service
       context: .
       docker:
-        dockerfile: services/chat-service/Dockerfile
+        dockerfile: services/chat-service/Dockerfile.dev
+      sync:
+        manual:
+          - src: "services/chat-service/src/**/*.ts"
+            dest: /usr/src/app/services/chat-service/src
+          - src: "services/chat-service/src/**/*.sql"
+            dest: /usr/src/app/services/chat-service/src
     - image: notification-service
       context: .
       docker:
-        dockerfile: services/notification-service/Dockerfile
+        dockerfile: services/notification-service/Dockerfile.dev
+      sync:
+        manual:
+          - src: "services/notification-service/src/**/*.ts"
+            dest: /app/src
+portForward:
+  - resourceType: Service
+    resourceName: auth-service
+    port: 3000
+    localPort: 3001
+  - resourceType: Service
+    resourceName: book-service
+    port: 3000
+    localPort: 3003
+  - resourceType: Service
+    resourceName: chat-service
+    port: 3000
+    localPort: 3005
 manifests:
   rawYaml:
     - k8s/ingress.yaml

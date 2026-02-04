@@ -1,0 +1,183 @@
+# ===========================================
+# PagePulse - Development Docker Compose
+# HOT RELOAD enabled - no rebuild on code changes!
+# ===========================================
+# Usage: docker-compose -f docker-compose.dev.yml up --build
+# ===========================================
+
+version: '3.8'
+
+services:
+  # --- Infrastructure ---
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    networks:
+      - pagepulse-network
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - pagepulse-network
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secure_password_123
+      POSTGRES_DB: pagepulse_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - pagepulse-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d pagepulse_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Separate Postgres for Chat Service (Microservices Pattern)
+  postgres-chat:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: chat_admin
+      POSTGRES_PASSWORD: chat_secure_pass_456
+      POSTGRES_DB: chat_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_chat_data:/var/lib/postgresql/data
+    networks:
+      - pagepulse-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat_admin -d chat_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Services with HOT RELOAD ---
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile.dev
+    ports:
+      - "3001:3000"      # Maps to VITE_AUTH_URL=http://localhost:3001
+      - "50051:50051"    # gRPC
+    volumes:
+      - ./services/auth-service/src:/usr/src/app/services/auth-service/src
+      - ./packages/protos:/usr/src/app/packages/protos
+    environment:
+      - GRPC_PORT=50051
+      - HTTP_PORT=3000
+      - DB_URL=postgres://admin:secure_password_123@postgres:5432/pagepulse_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - JWT_SECRET=89b88155b09089801b90128faa96d4af7e92b7860f7762527107f5cd427b0c8c
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=your_access_key_id
+      - AWS_SECRET_ACCESS_KEY=your_secret_access_key
+      - S3_BUCKET_NAME=your-bucket-name
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - pagepulse-network
+
+  book-service:
+    build:
+      context: .
+      dockerfile: services/book-service/Dockerfile.dev
+    ports:
+      - "3003:3000"      # Maps to VITE_BOOK_URL=http://localhost:3003
+      - "50052:50052"    # gRPC
+    volumes:
+      - ./services/book-service/src:/usr/src/app/services/book-service/src
+      - ./packages/protos:/usr/src/app/packages/protos
+    environment:
+      - GRPC_PORT=50052
+      - HTTP_PORT=3000
+      - DB_URL=postgres://admin:secure_password_123@postgres:5432/pagepulse_db
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - pagepulse-network
+
+  chat-service:
+    build:
+      context: .
+      dockerfile: services/chat-service/Dockerfile.dev
+    ports:
+      - "3005:3000"      # Maps to VITE_CHAT_URL=http://localhost:3005
+    volumes:
+      - ./services/chat-service/src:/usr/src/app/services/chat-service/src
+      - ./packages/protos:/usr/src/app/packages/protos
+    environment:
+      - PORT=3000
+      - HTTP_PORT=3000
+      - DB_URL=postgres://chat_admin:chat_secure_pass_456@postgres-chat:5432/chat_db
+      - JWT_SECRET=89b88155b09089801b90128faa96d4af7e92b7860f7762527107f5cd427b0c8c
+      - AUTH_GRPC_URL=auth-service:50051
+    depends_on:
+      postgres-chat:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    networks:
+      - pagepulse-network
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile.dev
+    ports:
+      - "3007:3000"
+    volumes:
+      - ./services/notification-service/src:/app/src
+      - ./packages/protos:/app/packages/protos
+    environment:
+      - HTTP_PORT=3000
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - MONGODB_URL=mongodb+srv://karanraj3056_db_user:MMM7Jrxh2xJq4toe@users-notifications.iwnveyk.mongodb.net/?appName=users-notifications
+      - AUTH_GRPC_URL=auth-service:50051
+      - SMTP_HOST=smtp.ethereal.email
+      - SMTP_PORT=587
+      - SMTP_USER=test_user
+      - SMTP_PASS=test_pass
+      - PUBLIC_URL=http://localhost:3001
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    networks:
+      - pagepulse-network
+
+networks:
+  pagepulse-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  postgres_chat_data:

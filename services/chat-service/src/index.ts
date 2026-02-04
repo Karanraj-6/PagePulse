@@ -11,7 +11,7 @@ import * as protoLoader from '@grpc/proto-loader';
 
 const app = express();
 app.use(cors({
-    origin: ["http://localhost:5173"],
+    origin: ["http://localhost:5173", "http://localhost:3000"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 }));
@@ -20,7 +20,7 @@ app.use(express.json()); // Enable JSON body parsing
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
     cors: {
-        origin: "http://localhost:5173",
+        origin: ["http://localhost:5173", "http://localhost:3000"],
         methods: ["GET", "POST"],
         credentials: true
     }
@@ -57,6 +57,19 @@ const getUserByUsernameMap = (username: string): Promise<string | null> => {
                 resolve(null);
             } else {
                 resolve(response.found ? response.user_id : null);
+            }
+        });
+    });
+};
+
+const getFriendsListMap = (userId: string): Promise<string[]> => {
+    return new Promise((resolve, reject) => {
+        authClient.GetFriendsList({ user_id: userId }, (err: any, response: any) => {
+            if (err) {
+                console.error("gRPC GetFriendsList Error:", err);
+                resolve([]);
+            } else {
+                resolve(response.friend_ids || []);
             }
         });
     });
@@ -145,7 +158,86 @@ app.post('/private', async (req, res) => {
     }
 });
 
-// 2. Initiate/Invite Book Session
+// 2. Get Private Chat Message History
+app.get('/private/:conversationId/messages', async (req, res) => {
+    const { conversationId } = req.params;
+    const { limit = 50, before } = req.query; // Pagination: limit & cursor
+
+    try {
+        let query = `
+            SELECT message_id, conversation_id, sender_id, content, sent_at
+            FROM messages 
+            WHERE conversation_id = $1
+        `;
+        const params: any[] = [conversationId];
+
+        // Cursor-based pagination (load older messages)
+        if (before) {
+            query += ` AND sent_at < $2`;
+            params.push(before);
+        }
+
+        query += ` ORDER BY sent_at DESC LIMIT $${params.length + 1}`;
+        params.push(Number(limit));
+
+        const result = await pool.query(query, params);
+
+        // Return in chronological order (oldest first)
+        res.json({
+            messages: result.rows.reverse(),
+            hasMore: result.rows.length === Number(limit)
+        });
+
+    } catch (err) {
+        console.error("Error fetching messages:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
+// 3. Get User's Conversations List
+app.get('/conversations/:userId', async (req, res) => {
+    const { userId } = req.params;
+
+    try {
+        const result = await pool.query(`
+            SELECT 
+                c.conversation_id,
+                c.type,
+                c.created_at,
+                (
+                    SELECT json_build_object(
+                        'message_id', m.message_id,
+                        'sender_id', m.sender_id,
+                        'content', m.content,
+                        'sent_at', m.sent_at
+                    )
+                    FROM messages m 
+                    WHERE m.conversation_id = c.conversation_id 
+                    ORDER BY m.sent_at DESC LIMIT 1
+                ) as last_message,
+                (
+                    SELECT array_agg(cp2.user_id) 
+                    FROM conversation_participants cp2 
+                    WHERE cp2.conversation_id = c.conversation_id 
+                    AND cp2.user_id != $1
+                ) as other_participants
+            FROM conversations c
+            JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
+            WHERE cp.user_id = $1 AND c.type = 'private'
+            ORDER BY (
+                SELECT MAX(m.sent_at) FROM messages m WHERE m.conversation_id = c.conversation_id
+            ) DESC NULLS LAST
+        `, [userId]);
+
+        res.json({ conversations: result.rows });
+
+    } catch (err) {
+        console.error("Error fetching conversations:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
+// 4. Initiate/Invite Book Session
 app.post('/reading', async (req, res) => {
     const { myId, bookId, friendUsername } = req.body; // friendUsername optional
 
@@ -262,14 +354,34 @@ io.on('connection', (socket) => {
         (socket as any).userId = userId;
     });
 
-    socket.on('reading_message', (data: { conversationId: string, sender: any, content: string }) => {
-        // Broadcast ONLY - No DB
-        const { conversationId, sender, content } = data;
-        io.to(conversationId).emit('reading_message', {
+    socket.on('reading_message', async (data: { conversationId: string, sender: any, senderId: string, content: string, isFriendsOnly?: boolean }) => {
+        const { conversationId, sender, senderId, content, isFriendsOnly } = data;
+        const messagePayload = {
             sender,
+            senderId,
             content,
-            time: Date.now()
-        });
+            time: Date.now(),
+            isFriendsOnly: isFriendsOnly || false
+        };
+
+        if (isFriendsOnly && senderId) {
+            // Get sender's friends list via gRPC
+            const friendIds = await getFriendsListMap(senderId);
+            const friendSet = new Set(friendIds);
+
+            // Get all sockets in the room and filter
+            const roomSockets = await io.in(conversationId).fetchSockets();
+            for (const roomSocket of roomSockets) {
+                const recipientId = (roomSocket as any).userId;
+                // Send only to sender themselves or their friends
+                if (recipientId === senderId || friendSet.has(recipientId)) {
+                    roomSocket.emit('reading_message', messagePayload);
+                }
+            }
+        } else {
+            // Broadcast to everyone in the room
+            io.to(conversationId).emit('reading_message', messagePayload);
+        }
     });
 
     // --- Public Book Room Events ---
@@ -325,7 +437,7 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.HTTP_PORT || process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
     console.log(`Chat Service running on port ${PORT}`);
 });

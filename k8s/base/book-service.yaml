@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: book-service
-        image: book-service:v7
+        image: book-service
         imagePullPolicy: Never
         resources:
           requests:
@@ -22,7 +22,7 @@ spec:
             memory: "128Mi"
         ports:
         - containerPort: 3000
-        - containerPort: 50051
+        - containerPort: 50052
         env:
         - name: HTTP_PORT
           valueFrom:
@@ -69,6 +69,6 @@ spec:
     targetPort: 3000
     nodePort: 30003
   - name: grpc
-    port: 50051
-    targetPort: 50051
+    port: 50052
+    targetPort: 50052
     nodePort: 30004

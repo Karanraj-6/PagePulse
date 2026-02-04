@@ -6,6 +6,7 @@ import nodemailer from 'nodemailer';
 const SMTP_CONFIG = {
     host: process.env.SMTP_HOST || 'smtp.ethereal.email',
     port: parseInt(process.env.SMTP_PORT || '587'),
+    secure: false, // Port 587 uses STARTTLS, not implicit TLS
     auth: {
         user: process.env.SMTP_USER || 'test_user',
         pass: process.env.SMTP_PASS || 'test_pass'

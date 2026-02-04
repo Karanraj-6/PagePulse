@@ -5,11 +5,18 @@
         "start": "ts-node src/index.ts"
     },
     "dependencies": {
+        "@grpc/grpc-js": "^1.9.0",
+        "@grpc/proto-loader": "^0.7.0",
         "amqplib": "^0.10.9",
+        "cors": "^2.8.5",
+        "express": "^5.1.0",
+        "mongoose": "^8.0.0",
         "nodemailer": "^7.0.13"
     },
     "devDependencies": {
         "@types/amqplib": "^0.10.0",
+        "@types/cors": "^2.8.0",
+        "@types/express": "^5.0.3",
         "@types/node": "^20.0.0",
         "@types/nodemailer": "^7.0.9",
         "ts-node": "^10.9.1",

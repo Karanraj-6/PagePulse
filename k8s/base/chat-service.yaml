@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: chat-service
-        image: chat-service:v3
+        image: chat-service
         imagePullPolicy: Never
         resources:
           requests:
@@ -32,7 +32,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: pagepulse-secrets
-              key: DB_URL
+              key: DB_URL_CHAT
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:

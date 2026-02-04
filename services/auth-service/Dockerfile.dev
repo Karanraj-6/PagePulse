@@ -1,0 +1,23 @@
+# Development Dockerfile with Hot Reload
+FROM node:18-alpine
+
+# Install nodemon globally for hot reload
+RUN npm install -g nodemon ts-node typescript
+
+WORKDIR /usr/src/app
+
+# Copy shared packages
+COPY packages/protos ./packages/protos
+
+# Setup Service
+WORKDIR /usr/src/app/services/auth-service
+COPY services/auth-service/package*.json ./
+RUN npm install
+
+# Copy source (will be overwritten by volume mount)
+COPY services/auth-service/ .
+
+EXPOSE 3000 50051
+
+# Use nodemon for hot reload - watches .ts and .sql files
+CMD ["nodemon", "--watch", "src", "--ext", "ts,sql", "--exec", "ts-node", "src/index.ts"]

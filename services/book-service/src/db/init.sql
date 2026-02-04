@@ -1,3 +1,6 @@
+-- Enable trigram extension for fuzzy text search
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE TABLE IF NOT EXISTS books (
     id INTEGER PRIMARY KEY,
     title TEXT,

@@ -1,0 +1,61 @@
+# Separate PostgreSQL for Chat Service (Microservices Pattern)
+# Each service owns its own database
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-chat
+spec:
+  serviceName: "postgres-chat-service"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-chat
+  template:
+    metadata:
+      labels:
+        app: postgres-chat
+    spec:
+      containers:
+      - name: postgres-chat
+        image: postgres:15
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: pagepulse-config
+              key: POSTGRES_CHAT_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pagepulse-secrets
+              key: POSTGRES_CHAT_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: pagepulse-config
+              key: POSTGRES_CHAT_DB
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-chat-data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-chat-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-chat-service
+spec:
+  selector:
+    app: postgres-chat
+  ports:
+  - name: db
+    port: 5432
+    targetPort: 5432

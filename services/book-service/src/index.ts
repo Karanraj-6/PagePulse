@@ -13,14 +13,14 @@ app.use(express.json());
 // Enable CORS
 import cors from 'cors';
 app.use(cors({
-    origin: ["http://localhost:5173"],
+    origin: ["http://localhost:5173", "http://localhost:3000"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 }));
 
 // --- Database Setup ---
 export const pool = new Pool({
-    connectionString: process.env.DB_URL || 'postgresql://postgres:postgres@postgres:5432/bookdb'
+    connectionString: process.env.DB_URL || 'postgres://admin:secure_password_123@postgres:5432/pagepulse_db'
 });
 
 async function initDB() {
@@ -638,7 +638,7 @@ function startGrpcServer() {
 
 startGrpcServer();
 
-const HTTP_PORT = process.env.HTTP_PORT || 3001;
+const HTTP_PORT = process.env.HTTP_PORT || 3000;
 app.listen(HTTP_PORT, () => {
     console.log(`Book Service REST API running on port ${HTTP_PORT}`);
 });

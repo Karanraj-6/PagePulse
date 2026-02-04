@@ -5,13 +5,17 @@ metadata:
 data:
   POSTGRES_USER: "admin"
   POSTGRES_DB: "pagepulse_db"
+  # Separate Chat DB (Microservices Pattern)
+  POSTGRES_CHAT_USER: "chat_admin"
+  POSTGRES_CHAT_DB: "chat_db"
   RABBITMQ_DEFAULT_USER: "guest"
   HTTP_PORT: "3000"
   GRPC_PORT_AUTH: "50051"
-  GRPC_PORT_BOOK: "50051"
+  GRPC_PORT_BOOK: "50052"
   SMTP_HOST: "smtp.ethereal.email"
   SMTP_PORT: "587"
   SMTP_USER: "test_user"
   SMTP_PASS: "test_pass"
-  PUBLIC_URL: "http://localhost:3000" # Minikube might need different URL, but keeping for now
+  PUBLIC_URL: "http://localhost:3001" # Points to auth-service for friend accept links
   REDIS_PORT: "6379"
+  AWS_REGION: "us-east-1"

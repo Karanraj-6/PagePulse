@@ -25,12 +25,37 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     networks:
       - pagepulse-network
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:alpine
     ports: [ "${REDIS_PORT}:6379" ]
     networks:
       - pagepulse-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mongodb:
+    image: mongo:7
+    ports: [ "${MONGODB_PORT}:27017" ]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB}
+    networks:
+      - pagepulse-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:15
@@ -41,58 +66,121 @@ services:
     ports: [ "${POSTGRES_PORT}:5432" ]
     networks:
       - pagepulse-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Separate Postgres for Chat Service (Microservices Pattern)
+  postgres-chat:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${POSTGRES_CHAT_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_CHAT_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_CHAT_DB}
+    ports: [ "${POSTGRES_CHAT_PORT}:5432" ]
+    networks:
+      - pagepulse-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_CHAT_USER} -d ${POSTGRES_CHAT_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # --- Services ---
   auth-service:
     build:
-      context: ./services/auth-service
+      context: .
+      dockerfile: services/auth-service/Dockerfile
     volumes:
-      - ./packages/protos:/packages/protos
+      - ./packages/protos:/usr/src/app/packages/protos
     environment:
       - GRPC_PORT=${GRPC_PORT_AUTH}
       - HTTP_PORT=${HTTP_PORT}
       - DB_URL=${DB_URL}
       - RABBITMQ_URL=${RABBITMQ_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     networks:
       - pagepulse-network
 
   book-service:
     build:
-      context: ./services/book-service
+      context: .
+      dockerfile: services/book-service/Dockerfile
     volumes:
-      - ./packages/protos:/packages/protos
-      - ./services/book-service/src:/app/src
+      - ./packages/protos:/usr/src/app/packages/protos
+      - ./services/book-service/src:/usr/src/app/services/book-service/src
     environment:
       - GRPC_PORT=${GRPC_PORT_BOOK}
       - HTTP_PORT=${HTTP_PORT}
       - RABBITMQ_URL=${RABBITMQ_URL}
       - DB_URL=${DB_URL}
-      - REDIS_URL=redis://redis:${REDIS_PORT}
+      - REDIS_URL=${REDIS_URL}
     depends_on:
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - pagepulse-network
 
   chat-service:
     build:
-      context: ./services/chat-service
+      context: .
+      dockerfile: services/chat-service/Dockerfile
     environment:
       - PORT=${HTTP_PORT}
-      - DB_URL=${DB_URL}
+      - HTTP_PORT=${HTTP_PORT}
+      - DB_URL=${DB_URL_CHAT}
+      - JWT_SECRET=${JWT_SECRET}
+      - AUTH_GRPC_URL=auth-service:${GRPC_PORT_AUTH}
     volumes:
-      - ./services/chat-service/src:/app/src
+      - ./packages/protos:/usr/src/app/packages/protos
+      - ./services/chat-service/src:/usr/src/app/services/chat-service/src
+    depends_on:
+      postgres-chat:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
     networks:
       - pagepulse-network
 
   notification-service:
     build:
-      context: ./services/notification-service
+      context: .
+      dockerfile: services/notification-service/Dockerfile
     volumes:
       - ./services/notification-service/src:/app/src
+      - ./packages/protos:/app/packages/protos
     environment:
+      - HTTP_PORT=${HTTP_PORT}
       - RABBITMQ_URL=${RABBITMQ_URL}
+      - MONGODB_URL=${MONGODB_URL}
+      - AUTH_GRPC_URL=auth-service:${GRPC_PORT_AUTH}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - PUBLIC_URL=${PUBLIC_URL}
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
     networks:
       - pagepulse-network
 

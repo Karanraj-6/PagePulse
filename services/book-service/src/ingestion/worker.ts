@@ -5,11 +5,13 @@ import EPub from "epub";
 import { JSDOM } from "jsdom";
 import path from "path";
 import fs from "fs";
-
+import Redis from "ioredis";
 
 const pool = new Pool({
-    connectionString: process.env.DB_URL || 'postgresql://postgres:postgres@postgres:5432/bookdb'
+    connectionString: process.env.DB_URL || 'postgres://admin:secure_password_123@postgres:5432/pagepulse_db'
 });
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379');
 
 const GUTENDEX = "https://gutendex.com/books/";
 const BOOK_LIMIT = 100;
@@ -22,6 +24,19 @@ if (!fs.existsSync(EPUB_DIR)) {
 
 export async function runIngestion() {
     console.log("[Ingestion] Starting...");
+
+    // Check if we already have books - skip if already populated
+    const existingBooks = await pool.query('SELECT COUNT(*) FROM books');
+    const bookCount = parseInt(existingBooks.rows[0].count);
+    if (bookCount >= BOOK_LIMIT) {
+        console.log(`[Ingestion] Already have ${bookCount} books. Skipping ingestion.`);
+        // Still populate trending in case Redis was cleared
+        await populateTrendingAfterIngestion();
+        return;
+    }
+
+    console.log(`[Ingestion] Found ${bookCount} books. Need ${BOOK_LIMIT - bookCount} more...`);
+
     let page = 1;
     let ingested = 0;
 
@@ -41,6 +56,43 @@ export async function runIngestion() {
     }
 
     console.log("✅ [Ingestion] Done");
+
+    // Populate trending after ingestion completes
+    await populateTrendingAfterIngestion();
+}
+
+// Populate Redis trending from DB (called after ingestion)
+async function populateTrendingAfterIngestion() {
+    try {
+        console.log('[Trending] Populating after ingestion...');
+
+        // Clear and repopulate
+        await redis.del('trending_books');
+
+        const result = await pool.query('SELECT * FROM books ORDER BY download_count DESC LIMIT 20');
+
+        if (result.rows.length === 0) {
+            console.log('[Trending] No books found in DB.');
+            return;
+        }
+
+        // Push in reverse so highest download_count is at HEAD
+        const books = result.rows.reverse().map(row => ({
+            ...row,
+            authors: typeof row.authors === 'string' ? JSON.parse(row.authors) : row.authors,
+            formats: typeof row.formats === 'string' ? JSON.parse(row.formats) : row.formats
+        }));
+
+        for (const book of books) {
+            await redis.lpush('trending_books', JSON.stringify(book));
+        }
+
+        await redis.ltrim('trending_books', 0, 19);
+        console.log(`[Trending] Populated with ${books.length} top books by download count.`);
+
+    } catch (err) {
+        console.error('[Trending] Post-ingestion population failed:', err);
+    }
 }
 
 async function ingestBook(book: any) {

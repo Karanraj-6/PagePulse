@@ -21,7 +21,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_key_123';
+const JWT_SECRET = process.env.JWT_SECRET || '89b88155b09089801b90128faa96d4af7e92b7860f7762527107f5cd427b0c8c';
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://rabbitmq:5672';
 
 // AWS S3 Configuration
@@ -256,6 +256,14 @@ app.post('/auth/login', async (req, res) => {
             { expiresIn: '1h' }
         );
 
+        // Set cookie for session-based auth (same as register)
+        res.cookie('token', token, {
+            httpOnly: true,
+            secure: false,
+            sameSite: 'lax',
+            maxAge: 3600000
+        });
+
         res.json({
             token,
             user: {
@@ -329,16 +337,25 @@ app.post('/users/avatar', upload.single('avatar'), async (req, res) => {
     }
 });
 
-// 3. Search Users
+// 3. Search Users (with fuzzy/trigram support)
 app.get('/users', async (req, res) => {
     const { q } = req.query;
     try {
-        const query = typeof q === 'string' ? q : '';
+        const query = typeof q === 'string' ? q.trim() : '';
+        if (!query) {
+            return res.json([]);
+        }
+        
+        // Trigram similarity search with ILIKE fallback
         const result = await pool.query(
-            "SELECT user_id, username FROM users WHERE username ILIKE $1 LIMIT 10",
-            [`%${query}%`]
+            `SELECT user_id, username, similarity(username, $1) as score
+             FROM users 
+             WHERE username % $1 OR username ILIKE $2
+             ORDER BY score DESC, username ASC
+             LIMIT 10`,
+            [query, `%${query}%`]
         );
-        res.json(result.rows);
+        res.json(result.rows.map(r => ({ user_id: r.user_id, username: r.username })));
     } catch (err) {
         console.error("Search Users Error:", err);
         res.status(500).json({ error: "Internal Server Error" });
@@ -453,13 +470,11 @@ app.put('/friends', async (req, res) => {
         );
 
         if ((updateRes.rowCount || 0) > 0) {
-            const accepterRes = await pool.query("SELECT username FROM users WHERE user_id = $1", [myId]);
-            const accepterName = accepterRes.rows[0]?.username || "A friend";
-
-            await pool.query(
-                "INSERT INTO notifications (user_id, message) VALUES ($1, $2)",
-                [targetId, `${accepterName} accepted your friend request!`]
-            );
+            // Publish friend.accepted event to RabbitMQ for notification-service
+            publishEvent('friend.accepted', {
+                accepterId: myId,
+                requesterId: targetId
+            });
         }
 
         res.json({ success: true });
@@ -566,12 +581,181 @@ function getUserByUsername(call: any, callback: any) {
         });
 }
 
+function checkFriendship(call: any, callback: any) {
+    const { user_id, target_user_id } = call.request;
+    if (!user_id || !target_user_id) {
+        return callback(null, { is_friend: false });
+    }
+
+    const query = `
+        SELECT 1 FROM friends 
+        WHERE ((user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)) 
+          AND status = 'accepted'
+    `;
+
+    pool.query(query, [user_id, target_user_id])
+        .then(res => {
+            const isFriend = (res.rowCount || 0) > 0;
+            callback(null, { is_friend: isFriend });
+        })
+        .catch(err => {
+            console.error("gRPC CheckFriendship Error:", err);
+            callback(null, { is_friend: false });
+        });
+}
+
+function getFriendsList(call: any, callback: any) {
+    const { user_id } = call.request;
+    if (!user_id) {
+        return callback(null, { friend_ids: [] });
+    }
+
+    const query = `
+        SELECT 
+            CASE WHEN user_id = $1 THEN friend_id ELSE user_id END as friend_id
+        FROM friends 
+        WHERE (user_id = $1 OR friend_id = $1) AND status = 'accepted'
+    `;
+
+    pool.query(query, [user_id])
+        .then(res => {
+            const friendIds = res.rows.map(row => row.friend_id);
+            callback(null, { friend_ids: friendIds });
+        })
+        .catch(err => {
+            console.error("gRPC GetFriendsList Error:", err);
+            callback(null, { friend_ids: [] });
+        });
+}
+
+function getUserById(call: any, callback: any) {
+    const { user_id } = call.request;
+    if (!user_id) {
+        return callback(null, { found: false });
+    }
+
+    pool.query('SELECT user_id, username, email FROM users WHERE user_id = $1', [user_id])
+        .then(res => {
+            if (res.rows.length > 0) {
+                const user = res.rows[0];
+                callback(null, { 
+                    user_id: user.user_id, 
+                    username: user.username, 
+                    email: user.email,
+                    found: true 
+                });
+            } else {
+                callback(null, { found: false });
+            }
+        })
+        .catch(err => {
+            console.error("gRPC GetUserById Error:", err);
+            callback(null, { found: false });
+        });
+}
+
+// Accept friend request via gRPC
+async function acceptFriend(call: any, callback: any) {
+    const { user_id, target_id } = call.request;
+    if (!user_id || !target_id) {
+        return callback(null, { success: false, message: 'Missing user_id or target_id' });
+    }
+
+    try {
+        // user_id = accepter, target_id = requester
+        const updateRes = await pool.query(
+            "UPDATE friends SET status = 'accepted' WHERE user_id = $2 AND friend_id = $1 AND status = 'pending' RETURNING *",
+            [user_id, target_id]
+        );
+
+        if ((updateRes.rowCount || 0) > 0) {
+            // Publish friend.accepted event
+            publishEvent('friend.accepted', {
+                accepterId: user_id,
+                requesterId: target_id
+            });
+            callback(null, { success: true, message: 'Friend request accepted', new_status: 'accepted' });
+        } else {
+            callback(null, { success: false, message: 'No pending request found' });
+        }
+    } catch (err) {
+        console.error("gRPC AcceptFriend Error:", err);
+        callback(null, { success: false, message: 'Database error' });
+    }
+}
+
+// Block user via gRPC
+async function blockUser(call: any, callback: any) {
+    const { user_id, target_id } = call.request;
+    if (!user_id || !target_id) {
+        return callback(null, { success: false, message: 'Missing user_id or target_id' });
+    }
+
+    try {
+        // Check if friendship exists
+        const exists = await pool.query(
+            'SELECT * FROM friends WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)',
+            [user_id, target_id]
+        );
+
+        if (exists.rows.length > 0) {
+            // Update existing to blocked
+            await pool.query(
+                "UPDATE friends SET status = 'blocked' WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)",
+                [user_id, target_id]
+            );
+        } else {
+            // Create new blocked entry
+            await pool.query(
+                'INSERT INTO friends (user_id, friend_id, status, requested_at) VALUES ($1, $2, $3, $4)',
+                [user_id, target_id, 'blocked', new Date()]
+            );
+        }
+
+        callback(null, { success: true, message: 'User blocked', new_status: 'blocked' });
+    } catch (err) {
+        console.error("gRPC BlockUser Error:", err);
+        callback(null, { success: false, message: 'Database error' });
+    }
+}
+
+// Reject/delete friend request via gRPC
+async function rejectFriend(call: any, callback: any) {
+    const { user_id, target_id } = call.request;
+    if (!user_id || !target_id) {
+        return callback(null, { success: false, message: 'Missing user_id or target_id' });
+    }
+
+    try {
+        // Delete the pending request
+        const deleteRes = await pool.query(
+            "DELETE FROM friends WHERE user_id = $2 AND friend_id = $1 AND status = 'pending' RETURNING *",
+            [user_id, target_id]
+        );
+
+        if ((deleteRes.rowCount || 0) > 0) {
+            callback(null, { success: true, message: 'Friend request rejected', new_status: 'removed' });
+        } else {
+            callback(null, { success: false, message: 'No pending request found' });
+        }
+    } catch (err) {
+        console.error("gRPC RejectFriend Error:", err);
+        callback(null, { success: false, message: 'Database error' });
+    }
+}
+
 function startGrpcServer() {
     const server = new grpc.Server();
     server.addService(authProto.AuthService.service, {
         ValidateToken: validateToken,
         CheckBlockStatus: checkBlockStatus,
-        GetUserByUsername: getUserByUsername
+        GetUserByUsername: getUserByUsername,
+        GetUserById: getUserById,
+        CheckFriendship: checkFriendship,
+        GetFriendsList: getFriendsList,
+        AcceptFriend: acceptFriend,
+        BlockUser: blockUser,
+        RejectFriend: rejectFriend
     });
     const GRPC_PORT = process.env.GRPC_PORT || 50051;
     server.bindAsync(`0.0.0.0:${GRPC_PORT}`, grpc.ServerCredentials.createInsecure(), () => {
