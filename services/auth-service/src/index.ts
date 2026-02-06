@@ -9,8 +9,9 @@ import jwt from 'jsonwebtoken';
 import amqp from 'amqplib';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import multer from 'multer';
+import Redis from 'ioredis';
 
 const app = express();
 app.use(cookieParser());
@@ -34,6 +35,18 @@ const s3Client = new S3Client({
 });
 
 const S3_BUCKET = process.env.S3_BUCKET_NAME || 'your-bucket-name';
+
+// Redis for avatar caching
+const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379');
+redis.on('connect', () => console.log('[Redis] Connected for avatar caching'));
+redis.on('error', (err) => console.error('[Redis] Error:', err.message));
+
+const AVATAR_CACHE_TTL = 86400; // 1 day in seconds
+
+// Helper: get avatar proxy URL
+function avatarProxyUrl(userId: string): string {
+    return `/avatar/${userId}`;
+}
 
 // Configure Multer for memory storage
 const upload = multer({
@@ -60,7 +73,6 @@ async function uploadToS3(file: Express.Multer.File, userId: string): Promise<st
         Key: fileName,
         Body: file.buffer,
         ContentType: file.mimetype,
-        ACL: 'public-read',
     });
 
     try {
@@ -203,13 +215,13 @@ app.get('/auth/me', async (req, res) => {
             [decoded.user_id]
         );
 
-        const avatar = photoResult.rows[0]?.photo_url || null;
+        const hasAvatar = !!photoResult.rows[0]?.photo_url;
 
         res.json({
             id: user.user_id,
             username: user.username,
             email: user.email,
-            avatar: avatar
+            avatar: hasAvatar ? avatarProxyUrl(decoded.user_id) : null
         });
     } catch (err) {
         return res.status(401).json({ error: "Invalid token" });
@@ -270,7 +282,7 @@ app.post('/auth/login', async (req, res) => {
                 id: user.user_id,
                 name: user.username,
                 email: user.email,
-                avatar: profile_url.rows[0]?.photo_url || null
+                avatar: profile_url.rows[0]?.photo_url ? avatarProxyUrl(user.user_id) : null
             }
         });
     } catch (err) {
@@ -334,9 +346,20 @@ app.post('/users/avatar', upload.single('avatar'), async (req, res) => {
 
         console.log(`[Avatar Upload] Database updated for user ${userId}`);
 
+        // Pre-warm Redis cache with the uploaded image
+        try {
+            const base64 = req.file.buffer.toString('base64');
+            const cacheKey = `avatar:${userId}`;
+            const cacheValue = JSON.stringify({ contentType: req.file.mimetype, data: base64 });
+            await redis.set(cacheKey, cacheValue, 'EX', AVATAR_CACHE_TTL);
+            console.log(`[Avatar Cache] Pre-warmed cache for user ${userId}`);
+        } catch (cacheErr) {
+            console.error('[Avatar Cache] Failed to pre-warm:', cacheErr);
+        }
+
         res.json({
             success: true,
-            avatarUrl
+            avatarUrl: avatarProxyUrl(userId)
         });
     } catch (error: any) {
         console.error('Avatar Upload Error:', error);
@@ -345,6 +368,66 @@ app.post('/users/avatar', upload.single('avatar'), async (req, res) => {
         } else {
             res.status(500).json({ error: "Internal Server Error" });
         }
+    }
+});
+
+// GET /avatar/:userId - Proxy endpoint: serve avatar from Redis cache or S3
+app.get('/avatar/:userId', async (req, res) => {
+    const { userId } = req.params;
+    const cacheKey = `avatar:${userId}`;
+
+    try {
+        // 1. Check Redis cache first
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+            console.log(`[Avatar] Cache HIT for ${userId}`);
+            const { contentType, data } = JSON.parse(cached);
+            const imgBuffer = Buffer.from(data, 'base64');
+            res.set('Content-Type', contentType);
+            res.set('Cache-Control', 'public, max-age=86400'); // browser cache 1 day too
+            return res.send(imgBuffer);
+        }
+
+        console.log(`[Avatar] Cache MISS for ${userId}, fetching from S3...`);
+
+        // 2. Get S3 URL from DB
+        const photoResult = await pool.query(
+            'SELECT photo_url FROM profile_photos WHERE user_id = $1',
+            [userId]
+        );
+
+        const photoUrl = photoResult.rows[0]?.photo_url;
+        if (!photoUrl) {
+            return res.status(404).json({ error: 'No avatar found' });
+        }
+
+        // 3. Extract S3 key from URL and fetch via SDK
+        const s3Key = photoUrl.replace(`https://${S3_BUCKET}.s3.amazonaws.com/`, '');
+        const command = new GetObjectCommand({ Bucket: S3_BUCKET, Key: s3Key });
+        const s3Response = await s3Client.send(command);
+
+        const chunks: Buffer[] = [];
+        for await (const chunk of s3Response.Body as any) {
+            chunks.push(Buffer.from(chunk));
+        }
+        const imgBuffer = Buffer.concat(chunks);
+        const contentType = s3Response.ContentType || 'image/jpeg';
+
+        // 4. Cache in Redis for 1 day
+        const cacheValue = JSON.stringify({
+            contentType,
+            data: imgBuffer.toString('base64')
+        });
+        await redis.set(cacheKey, cacheValue, 'EX', AVATAR_CACHE_TTL);
+        console.log(`[Avatar] Cached in Redis for ${userId} (${imgBuffer.length} bytes)`);
+
+        // 5. Serve image
+        res.set('Content-Type', contentType);
+        res.set('Cache-Control', 'public, max-age=86400');
+        return res.send(imgBuffer);
+    } catch (err) {
+        console.error(`[Avatar] Error serving avatar for ${userId}:`, err);
+        res.status(500).json({ error: 'Failed to load avatar' });
     }
 });
 

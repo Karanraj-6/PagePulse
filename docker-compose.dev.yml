@@ -82,6 +82,7 @@ services:
       HTTP_PORT: 3000
       DB_URL: postgres://admin:secure_password_123@postgres:5432/pagepulse_db
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
