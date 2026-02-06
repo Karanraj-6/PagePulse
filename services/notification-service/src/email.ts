@@ -108,7 +108,32 @@ function getFriendRequestTemplate(senderName: string, acceptLink: string): strin
     `;
 }
 
-export async function sendEmail(type: 'WELCOME' | 'FRIEND_REQUEST', to: string, data: any) {
+function getInvitationTemplate(senderName: string, bookTitle: string, bookId: string, appUrl: string): string {
+    const coverUrl = `https://www.gutenberg.org/cache/epub/${bookId}/pg${bookId}.cover.medium.jpg`;
+    return `
+    <div style="font-family: 'Verdana', sans-serif; background-color: #fcfcfc; padding: 40px; border-radius: 12px; max-width: 600px; margin: auto; color: #333;">
+    ${HEADER}
+    <h2 style="color: #111; font-size: 22px;">📖 You've Been Invited!</h2>
+    <p style="font-size: 16px; line-height: 1.7;">
+        <strong>${senderName}</strong> wants to read <strong>"${bookTitle}"</strong> with you on PagePulse.
+    </p>
+    <div style="text-align: center; margin: 25px 0;">
+        <img src="${coverUrl}" alt="${bookTitle}" style="max-width: 180px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
+        <p style="margin-top: 10px; font-weight: bold; color: #4F46E5;">${bookTitle}</p>
+    </div>
+    <p style="font-size: 16px; line-height: 1.7;">
+        Reading together is better — jump in, share thoughts, and enjoy the book side by side.
+    </p>
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="${appUrl}" style="background-color: #4F46E5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">Open PagePulse</a>
+    </div>
+    <p style="font-size: 12px; color: #666; text-align: center;">Not interested? No worries — just ignore this email.</p>
+    ${FOOTER}
+    </div>
+    `;
+}
+
+export async function sendEmail(type: 'WELCOME' | 'FRIEND_REQUEST' | 'INVITATION', to: string, data: any) {
     if (!transporter) await initEmailService();
 
     let subject = "";
@@ -122,6 +147,10 @@ export async function sendEmail(type: 'WELCOME' | 'FRIEND_REQUEST', to: string, 
         case 'FRIEND_REQUEST':
             subject = `${data.senderName} sent you a friend request`;
             html = getFriendRequestTemplate(data.senderName, data.acceptLink);
+            break;
+        case 'INVITATION':
+            subject = `${data.senderName} invited you to read "${data.bookTitle}" on PagePulse`;
+            html = getInvitationTemplate(data.senderName, data.bookTitle, data.bookId, data.appUrl);
             break;
     }
 

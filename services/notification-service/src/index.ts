@@ -361,6 +361,22 @@ app.post('/invitations', async (req, res) => {
         await notification.save();
         pushToChat(notification.toObject());
 
+        // Send invitation email to receiver
+        const receiverInfo = await getUserById(receiver_id);
+        if (receiverInfo.found && receiverInfo.email) {
+            const appUrl = process.env.APP_PUBLIC_URL || 'http://localhost:5173';
+            try {
+                await sendEmail('INVITATION', receiverInfo.email, {
+                    senderName: senderUsername,
+                    bookTitle: book_title,
+                    bookId: book_id,
+                    appUrl
+                });
+            } catch (emailErr: any) {
+                console.warn('[Invitation] Email failed (non-fatal):', emailErr?.message ?? emailErr);
+            }
+        }
+
         res.json({ success: true, invitationId: invitation._id, notificationId: notification._id });
     } catch (err) {
         console.error('Create invitation error:', err);
