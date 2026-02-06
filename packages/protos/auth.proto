@@ -70,6 +70,7 @@ message UserInfoResponse {
   string username = 2;
   string email = 3;
   bool found = 4;
+  string avatar = 5;
 }
 
 message FriendActionRequest {

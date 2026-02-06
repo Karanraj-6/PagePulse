@@ -307,7 +307,12 @@ app.get('/chatusers/:id', async (req, res) => {
             }
 
             // Map auth-service fields to a simple shape for chat frontend
-            return res.json({ id: response.user_id, username: response.username, email: response.email });
+            return res.json({
+                id: response.user_id,
+                username: response.username,
+                email: response.email,
+                avatar: response.avatar || null
+            });
         });
     } catch (err) {
         console.error("/chatusers/:id Error:", err);

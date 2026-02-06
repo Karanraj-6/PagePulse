@@ -442,14 +442,20 @@ app.get('/users', async (req, res) => {
         
         // Trigram similarity search with ILIKE fallback
         const result = await pool.query(
-            `SELECT user_id, username, similarity(username, $1) as score
-             FROM users 
-             WHERE username % $1 OR username ILIKE $2
-             ORDER BY score DESC, username ASC
+            `SELECT u.user_id, u.username, similarity(u.username, $1) as score,
+                    pp.photo_url
+             FROM users u
+             LEFT JOIN profile_photos pp ON pp.user_id = u.user_id
+             WHERE u.username % $1 OR u.username ILIKE $2
+             ORDER BY score DESC, u.username ASC
              LIMIT 10`,
             [query, `%${query}%`]
         );
-        res.json(result.rows.map(r => ({ user_id: r.user_id, username: r.username })));
+        res.json(result.rows.map(r => ({
+            user_id: r.user_id,
+            username: r.username,
+            avatar: r.photo_url ? avatarProxyUrl(r.user_id) : null
+        })));
     } catch (err) {
         console.error("Search Users Error:", err);
         res.status(500).json({ error: "Internal Server Error" });
@@ -465,21 +471,27 @@ app.get('/addfriends', async (req, res) => {
             if (!userId || typeof userId !== 'string') return res.status(400).json({ error: "Missing userId" });
 
             const result = await pool.query(
-                `SELECT user_id, username, similarity(username, $1) as score
-                 FROM users
-                 WHERE (username % $1 OR username ILIKE $2)
-                   AND user_id != $3
-                   AND user_id NOT IN (
+                `SELECT u.user_id, u.username, similarity(u.username, $1) as score,
+                        pp.photo_url
+                 FROM users u
+                 LEFT JOIN profile_photos pp ON pp.user_id = u.user_id
+                 WHERE (u.username % $1 OR u.username ILIKE $2)
+                   AND u.user_id != $3
+                   AND u.user_id NOT IN (
                         SELECT friend_id FROM friends WHERE user_id = $3
                         UNION
                         SELECT user_id FROM friends WHERE friend_id = $3
                    )
-                 ORDER BY score DESC, username ASC
+                 ORDER BY score DESC, u.username ASC
                  LIMIT 10`,
                 [query, `%${query}%`, userId]
             );
 
-            res.json(result.rows.map((r: any) => ({ user_id: r.user_id, username: r.username })));
+            res.json(result.rows.map((r: any) => ({
+                user_id: r.user_id,
+                username: r.username,
+                avatar: r.photo_url ? avatarProxyUrl(r.user_id) : null
+            })));
         } catch (err) {
             console.error("AddFriends Search Error:", err);
             res.status(500).json({ error: "Internal Server Error" });
@@ -493,18 +505,25 @@ app.get('/friends', async (req, res) => {
 
     try {
         const result = await pool.query(`
-            SELECT u.user_id, u.username, f.status 
+            SELECT u.user_id, u.username, f.status, pp.photo_url
             FROM friends f
             JOIN users u ON u.user_id = f.friend_id
+            LEFT JOIN profile_photos pp ON pp.user_id = u.user_id
             WHERE f.user_id = $1
             UNION
-            SELECT u.user_id, u.username, f.status 
+            SELECT u.user_id, u.username, f.status, pp.photo_url
             FROM friends f
             JOIN users u ON u.user_id = f.user_id
+            LEFT JOIN profile_photos pp ON pp.user_id = u.user_id
             WHERE f.friend_id = $1
         `, [userId]);
 
-        res.json(result.rows);
+        res.json(result.rows.map((r: any) => ({
+            user_id: r.user_id,
+            username: r.username,
+            status: r.status,
+            avatar: r.photo_url ? avatarProxyUrl(r.user_id) : null
+        })));
     } catch (err) {
         console.error("Get Friends Error:", err);
         res.status(500).json({ error: "Internal Server Error" });
@@ -823,7 +842,11 @@ function getUserById(call: any, callback: any) {
         return callback(null, { found: false });
     }
 
-    pool.query('SELECT user_id, username, email FROM users WHERE user_id = $1', [user_id])
+    pool.query(
+        `SELECT u.user_id, u.username, u.email, pp.photo_url
+         FROM users u
+         LEFT JOIN profile_photos pp ON pp.user_id = u.user_id
+         WHERE u.user_id = $1`, [user_id])
         .then(res => {
             if (res.rows.length > 0) {
                 const user = res.rows[0];
@@ -831,6 +854,7 @@ function getUserById(call: any, callback: any) {
                     user_id: user.user_id, 
                     username: user.username, 
                     email: user.email,
+                    avatar: user.photo_url ? avatarProxyUrl(user.user_id) : '',
                     found: true 
                 });
             } else {
