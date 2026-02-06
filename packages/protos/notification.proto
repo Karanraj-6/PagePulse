@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package notification;
+
+// Chat-service implements this so notification-service can push
+// real-time alerts to connected frontend sockets.
+service NotificationPush {
+  rpc PushNotification (PushNotificationRequest) returns (PushNotificationResponse);
+}
+
+message PushNotificationRequest {
+  string user_id         = 1;  // receiver
+  string type            = 2;  // e.g. friend_requested, welcome, invitation …
+  string message         = 3;
+  string sender_id       = 4;
+  string sender_username = 5;
+  string notification_id = 6;  // Mongo _id so frontend can mark-read / delete
+  string invitation_id   = 7;  // optional – set when type == "invitation"
+}
+
+message PushNotificationResponse {
+  bool   delivered = 1;  // true if at least one socket received the event
+  string error     = 2;
+}

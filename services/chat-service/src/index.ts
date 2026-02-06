@@ -26,14 +26,67 @@ const io = new Server(httpServer, {
     }
 });
 
-// --- gRPC Client Setup ---
-const PROTO_PATH = path.join(__dirname, '../../../packages/protos/auth.proto');
-const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
+// --- gRPC Client Setup (auth-service) ---
+const AUTH_PROTO_PATH = path.join(__dirname, '../../../packages/protos/auth.proto');
+const authPkgDef = protoLoader.loadSync(AUTH_PROTO_PATH, {
     keepCase: true, longs: String, enums: String, defaults: true, oneofs: true
 });
-const authProto: any = grpc.loadPackageDefinition(packageDefinition).auth;
+const authProto: any = grpc.loadPackageDefinition(authPkgDef).auth;
 const AUTH_GRPC_URL = process.env.AUTH_GRPC_URL || 'auth-service:50051';
 const authClient = new authProto.AuthService(AUTH_GRPC_URL, grpc.credentials.createInsecure());
+
+// --- gRPC Server Setup (notification push) ---
+const NOTIF_PROTO_PATH = path.join(__dirname, '../../../packages/protos/notification.proto');
+const notifPkgDef = protoLoader.loadSync(NOTIF_PROTO_PATH, {
+    keepCase: true, longs: String, enums: String, defaults: true, oneofs: true
+});
+const notifProto: any = grpc.loadPackageDefinition(notifPkgDef).notification;
+
+// userId → Set<socketId>  — tracks every connected socket per user
+const userSockets = new Map<string, Set<string>>();
+
+function addUserSocket(userId: string, socketId: string) {
+    if (!userSockets.has(userId)) userSockets.set(userId, new Set());
+    userSockets.get(userId)!.add(socketId);
+}
+
+function removeUserSocket(userId: string, socketId: string) {
+    const socks = userSockets.get(userId);
+    if (socks) {
+        socks.delete(socketId);
+        if (socks.size === 0) userSockets.delete(userId);
+    }
+}
+
+// gRPC handler: notification-service calls this to push a real-time alert
+function pushNotificationHandler(call: any, callback: any) {
+    const { user_id, type, message, sender_id, sender_username, notification_id, invitation_id } = call.request;
+    const sockets = userSockets.get(user_id);
+
+    if (sockets && sockets.size > 0) {
+        const payload = { user_id, type, message, sender_id, sender_username, notification_id, invitation_id };
+        for (const sid of sockets) {
+            io.to(sid).emit('receive_notification', payload);
+        }
+        console.log(`[Push] Emitted receive_notification to ${sockets.size} socket(s) for user ${user_id}`);
+        callback(null, { delivered: true, error: '' });
+    } else {
+        console.log(`[Push] No active sockets for user ${user_id} – notification stored only`);
+        callback(null, { delivered: false, error: 'User not connected' });
+    }
+}
+
+// Start gRPC server
+const GRPC_PORT = process.env.GRPC_PORT || '50053';
+const grpcServer = new grpc.Server();
+grpcServer.addService(notifProto.NotificationPush.service, { PushNotification: pushNotificationHandler });
+grpcServer.bindAsync(`0.0.0.0:${GRPC_PORT}`, grpc.ServerCredentials.createInsecure(), (err, port) => {
+    if (err) {
+        console.error('[gRPC] Failed to bind:', err);
+    } else {
+        console.log(`[gRPC] NotificationPush server listening on port ${port}`);
+    }
+});
 
 // Promisify gRPC calls
 const checkBlockStatusMap = (userId: string, targetUserId: string): Promise<boolean> => {
@@ -237,6 +290,31 @@ app.get('/conversations/:userId', async (req, res) => {
     }
 });
 
+// Proxy endpoint: fetch user details from auth-service via gRPC and return to frontend
+app.get('/chatusers/:id', async (req, res) => {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: "Missing id" });
+
+    try {
+        authClient.GetUserById({ user_id: id }, (err: any, response: any) => {
+            if (err) {
+                console.error("gRPC GetUserById Error:", err);
+                return res.status(502).json({ error: "Auth service error" });
+            }
+
+            if (!response || !response.found) {
+                return res.status(404).json({ found: false });
+            }
+
+            // Map auth-service fields to a simple shape for chat frontend
+            return res.json({ id: response.user_id, username: response.username, email: response.email });
+        });
+    } catch (err) {
+        console.error("/chatusers/:id Error:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
 // 4. Initiate/Invite Book Session
 app.post('/reading', async (req, res) => {
     const { myId, bookId, friendUsername } = req.body; // friendUsername optional
@@ -283,6 +361,14 @@ const activeSessions = new Map<string, ReadingSession>(); // conversationId -> S
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
+
+    // --- Register userId ↔ socket for real-time notifications ---
+    socket.on('register', (userId: string) => {
+        if (!userId) return;
+        (socket as any).userId = userId;
+        addUserSocket(userId, socket.id);
+        console.log(`[Socket] Registered user ${userId} → socket ${socket.id}`);
+    });
 
     // --- Private Chat Events (Persisted) ---
     socket.on('join_private_chat', (conversationId: string) => {
@@ -399,6 +485,28 @@ io.on('connection', (socket) => {
         (socket as any).userId = userId; // Ensure userId is set
     });
 
+    // [NEW] Handle request for the list of active users in a public book room
+    socket.on('request_active_users', async (data: { bookId: string | number }) => {
+        const { bookId } = data;
+        const roomName = `book_${bookId}`;
+        try {
+            // Fetch all sockets currently in this room
+            const sockets = await io.in(roomName).fetchSockets();
+
+            // Extract the 'userId' from each socket (requires join_book_room to set it)
+            const userIds = sockets
+                .map(s => (s as any).userId)
+                .filter(id => !!id);
+
+            // Send the list of IDs back to the requester
+            socket.emit('active_users', userIds);
+
+            console.log(`[BookRoom] Sent ${userIds.length} active users for ${roomName}`);
+        } catch (error) {
+            console.error("Error fetching active users:", error);
+        }
+    });
+
     socket.on('leave_book_room', (data: { bookId: string | number, userId: string }) => {
         const { bookId, userId } = data;
         const roomName = `book_${bookId}`;
@@ -413,6 +521,11 @@ io.on('connection', (socket) => {
         console.log('User disconnected:', socket.id);
         const userId = (socket as any).userId;
         const bookRoom = (socket as any).bookRoom;
+
+        // Clean up notification socket registry
+        if (userId) {
+            removeUserSocket(userId, socket.id);
+        }
 
         // 1. Handle Public Book Room Disconnect
         if (bookRoom && userId) {

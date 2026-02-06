@@ -13,6 +13,8 @@ service AuthService {
   rpc AcceptFriend (FriendActionRequest) returns (FriendActionResponse);
   rpc BlockUser (FriendActionRequest) returns (FriendActionResponse);
   rpc RejectFriend (FriendActionRequest) returns (FriendActionResponse);
+  // Real-time notification push
+  rpc PushNotification (PushNotificationRequest) returns (PushNotificationResponse);
 }
 
 message ValidateTokenRequest {
@@ -81,4 +83,20 @@ message FriendActionResponse {
   bool success = 1;
   string message = 2;
   string new_status = 3;    // 'accepted', 'blocked', 'removed'
+}
+
+// Real-time notification push
+message PushNotificationRequest {
+  string user_id = 1;           // Target user to push to
+  string notification_id = 2;   // MongoDB notification _id
+  string type = 3;              // 'friend_requested', 'friend_accepted', 'welcome', 'invitation', etc.
+  string message = 4;
+  string sender_id = 5;
+  string sender_username = 6;
+  string created_at = 7;
+}
+
+message PushNotificationResponse {
+  bool delivered = 1;           // true if user was online and event was emitted
+  string info = 2;
 }

@@ -150,7 +150,7 @@ app.post('/auth/register', async (req, res) => {
             [userId, null]
         );
 
-        publishEvent('user.registered', { email, username });
+        publishEvent('user.registered', { userId, email, username });
 
         const token = jwt.sign(
             { user_id: userId, username: username },
@@ -279,6 +279,17 @@ app.post('/auth/login', async (req, res) => {
     }
 });
 
+// Logout
+app.post('/auth/logout', (req, res) => {
+    res.clearCookie('token', {
+        httpOnly: true,
+        path: '/',
+        sameSite: 'lax', // Must match login setting
+        secure: false // Set true if using https
+    });
+    res.json({ success: true });
+});
+
 // NEW: Upload Avatar
 app.post('/users/avatar', upload.single('avatar'), async (req, res) => {
     try {
@@ -361,6 +372,36 @@ app.get('/users', async (req, res) => {
         res.status(500).json({ error: "Internal Server Error" });
     }
 });
+
+    // 3.5. Search Addable Friends (like /users but exclude any existing friend/requests)
+app.get('/addfriends', async (req, res) => {
+        const { q, userId } = req.query;
+        try {
+            const query = typeof q === 'string' ? q.trim() : '';
+            if (!query) return res.json([]);
+            if (!userId || typeof userId !== 'string') return res.status(400).json({ error: "Missing userId" });
+
+            const result = await pool.query(
+                `SELECT user_id, username, similarity(username, $1) as score
+                 FROM users
+                 WHERE (username % $1 OR username ILIKE $2)
+                   AND user_id != $3
+                   AND user_id NOT IN (
+                        SELECT friend_id FROM friends WHERE user_id = $3
+                        UNION
+                        SELECT user_id FROM friends WHERE friend_id = $3
+                   )
+                 ORDER BY score DESC, username ASC
+                 LIMIT 10`,
+                [query, `%${query}%`, userId]
+            );
+
+            res.json(result.rows.map((r: any) => ({ user_id: r.user_id, username: r.username })));
+        } catch (err) {
+            console.error("AddFriends Search Error:", err);
+            res.status(500).json({ error: "Internal Server Error" });
+        }
+    });
 
 // 4. Friend Management
 app.get('/friends', async (req, res) => {

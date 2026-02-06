@@ -5,6 +5,28 @@ import amqp from 'amqplib';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import path from 'path';
+import dotenv from 'dotenv';
+
+// Load .env as fallback (for local dev without Docker).
+// In Docker, env vars come from docker-compose env_file.
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+
+// Safety: strip surrounding quotes from env vars (Compose/dotenv edge case)
+function stripQuotes(val: string | undefined): string | undefined {
+    if (val && val.startsWith('"') && val.endsWith('"')) return val.slice(1, -1);
+    if (val && val.startsWith("'") && val.endsWith("'")) return val.slice(1, -1);
+    return val;
+}
+process.env.MONGODB_URL = stripQuotes(process.env.MONGODB_URL);
+process.env.SMTP_HOST = stripQuotes(process.env.SMTP_HOST);
+process.env.SMTP_PORT = stripQuotes(process.env.SMTP_PORT);
+process.env.SMTP_USER = stripQuotes(process.env.SMTP_USER);
+process.env.SMTP_PASS = stripQuotes(process.env.SMTP_PASS);
+
+// Log presence (not values) of critical vars for debugging
+console.log('[Config] MONGODB_URL set?', !!process.env.MONGODB_URL);
+console.log('[Config] SMTP_HOST set?', !!process.env.SMTP_HOST);
+
 import { initEmailService, sendEmail } from './email';
 
 const app = express();
@@ -20,13 +42,55 @@ const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://admin:mongo_pass_123@m
 const AUTH_GRPC_URL = process.env.AUTH_GRPC_URL || 'auth-service:50051';
 const HTTP_PORT = process.env.HTTP_PORT || 3000;
 
-// --- gRPC Client Setup ---
+// --- gRPC Client Setup (auth-service) ---
 const PROTO_PATH = path.join(__dirname, '../packages/protos/auth.proto');
 const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
     keepCase: true, longs: String, enums: String, defaults: true, oneofs: true
 });
 const authProto: any = grpc.loadPackageDefinition(packageDefinition).auth;
 const authClient = new authProto.AuthService(AUTH_GRPC_URL, grpc.credentials.createInsecure());
+
+// --- gRPC Client Setup (chat-service – real-time push) ---
+const NOTIF_PROTO_PATH = path.join(__dirname, '../packages/protos/notification.proto');
+const notifPkgDef = protoLoader.loadSync(NOTIF_PROTO_PATH, {
+    keepCase: true, longs: String, enums: String, defaults: true, oneofs: true
+});
+const notifProto: any = grpc.loadPackageDefinition(notifPkgDef).notification;
+const CHAT_GRPC_URL = process.env.CHAT_GRPC_URL || 'chat-service:50053';
+const chatPushClient = new notifProto.NotificationPush(CHAT_GRPC_URL, grpc.credentials.createInsecure());
+
+/**
+ * Fire-and-forget push to chat-service so it can emit to the user's socket.
+ * Failures are logged but never block the caller.
+ */
+function pushToChat(notification: {
+    receiver_id: string;
+    sender_id: string;
+    sender_username?: string | null;
+    type: string;
+    message: string;
+    _id?: any;
+    invitation_id?: string | null;
+}) {
+    const req = {
+        user_id: notification.receiver_id,
+        type: notification.type,
+        message: notification.message,
+        sender_id: notification.sender_id,
+        sender_username: notification.sender_username || '',
+        notification_id: notification._id ? notification._id.toString() : '',
+        invitation_id: notification.invitation_id || ''
+    };
+    chatPushClient.PushNotification(req, (err: any, res: any) => {
+        if (err) {
+            console.warn('[Push] gRPC PushNotification failed (non-fatal):', err.message);
+        } else if (res?.delivered) {
+            console.log(`[Push] Delivered real-time notification to user ${req.user_id}`);
+        } else {
+            console.log(`[Push] User ${req.user_id} not connected — stored only`);
+        }
+    });
+}
 
 // Promisify gRPC call
 const getUserById = (userId: string): Promise<{ username: string; email: string; found: boolean }> => {
@@ -91,18 +155,56 @@ const notificationSchema = new mongoose.Schema({
     sender_username: { type: String },
     type: { 
         type: String, 
-        enum: ['friend_requested', 'friend_accepted', 'welcome', 'system'],
+        enum: ['friend_requested', 'friend_accepted', 'welcome', 'system', 'invitation'],
         required: true 
     },
     message: { type: String, required: true },
     read: { type: Boolean, default: false },
+    // optional link to an invitation document
+    invitation_id: { type: String, required: false, index: true },
     created_at: { type: Date, default: Date.now }
 });
 
 const Notification = mongoose.model('Notification', notificationSchema);
 
+// Invitation schema
+const invitationSchema = new mongoose.Schema({
+    receiver_id: { type: String, required: true, index: true },
+    sender_id: { type: String, required: true },
+    sender_username: { type: String },
+    book_id: { type: String, required: true },
+    book_title: { type: String, required: true },
+    created_at: { type: Date, default: Date.now }
+});
+
+const Invitation = mongoose.model('Invitation', invitationSchema);
+
+// Helper: delete notification with a retry (attempts default 2)
+async function deleteNotificationWithRetry(id: string, attempts = 2): Promise<boolean> {
+    for (let i = 1; i <= attempts; i++) {
+        try {
+            const del = await Notification.findByIdAndDelete(id);
+            if (del) {
+                console.log(`[Notification] Deleted notification ${id} (attempt ${i})`);
+                return true;
+            } else {
+                console.warn(`[Notification] Delete attempt ${i} returned null for ${id}`);
+            }
+        } catch (e) {
+            console.error(`[Notification] Delete attempt ${i} error for ${id}:`, e);
+        }
+
+        if (i < attempts) {
+            // small backoff before retry
+            await new Promise((res) => setTimeout(res, 1000));
+        }
+    }
+    console.error(`[Notification] Failed to delete notification ${id} after ${attempts} attempts`);
+    return false;
+}
+
 // --- Message Templates ---
-const generateMessage = (type: string, senderUsername: string): string => {
+const generateMessage = (type: string, senderUsername: string, extra?: any): string => {
     switch (type) {
         case 'friend_requested':
             return `${senderUsername} wants to add you as a friend`;
@@ -110,6 +212,9 @@ const generateMessage = (type: string, senderUsername: string): string => {
             return `${senderUsername} accepted your friend request`;
         case 'welcome':
             return `Welcome to PagePulse, ${senderUsername}!`;
+        case 'invitation':
+            // extra can contain bookTitle
+            return `${senderUsername} invited you to read ${extra?.bookTitle || 'a book'}`;
         default:
             return 'You have a new notification';
     }
@@ -148,35 +253,50 @@ async function startRabbitMQConsumer() {
                             message: generateMessage('welcome', payload.username)
                         });
                         await notification.save();
+                        pushToChat(notification.toObject());
 
                         // Also send welcome email
                         await sendEmail('WELCOME', payload.email, { username: payload.username });
                     }
 
                     if (type === 'friend.requested') {
-                        // Get sender info via gRPC
-                        const senderInfo = await getUserById(payload.senderId);
-                        const senderUsername = senderInfo.found ? senderInfo.username : payload.senderName || 'Someone';
+                        const { senderId, targetId, targetEmail } = payload;
 
-                        // Save notification to MongoDB
+                        if (!senderId || !targetId) {
+                            console.error('[Notification] Invalid friend.requested payload:', payload);
+                            return;
+                        }
+
+                        const senderInfo = await getUserById(senderId);
+                        const senderUsername =
+                            senderInfo.found ? senderInfo.username : payload.senderName || 'Someone';
+
                         const notification = new Notification({
-                            receiver_id: payload.targetId,
-                            sender_id: payload.senderId,
+                            receiver_id: targetId,
+                            sender_id: senderId,
                             sender_username: senderUsername,
                             type: 'friend_requested',
                             message: generateMessage('friend_requested', senderUsername)
                         });
-                        await notification.save();
-                        console.log(`[Notification] Saved friend request notification for ${payload.targetId}`);
 
-                        // Also send email
-                        const baseUrl = process.env.PUBLIC_URL || 'http://localhost:3001';
-                        const link = `${baseUrl}/friends/accept?userId=${payload.targetId}&targetId=${payload.senderId}`;
-                        await sendEmail('FRIEND_REQUEST', payload.targetEmail, {
-                            senderName: senderUsername,
-                            acceptLink: link
-                        });
+                        await notification.save();
+                        pushToChat(notification.toObject());
+                        console.log(`[Notification] Saved friend request notification for ${targetId}`);
+
+                        if (targetEmail) {
+                            const baseUrl = process.env.PUBLIC_URL || 'http://localhost:3001';
+                            const link = `${baseUrl}/friends/accept?userId=${targetId}&targetId=${senderId}`;
+                            try {
+                                await sendEmail('FRIEND_REQUEST', targetEmail, {
+                                    senderName: senderUsername,
+                                    acceptLink: link
+                                });
+                            } catch (err: any) {
+                                console.warn('[Notification] Email failed (non-fatal):', err?.message ?? err);
+                            }
+                        }
                     }
+
 
                     if (type === 'friend.accepted') {
                         // Get accepter info via gRPC
@@ -192,6 +312,7 @@ async function startRabbitMQConsumer() {
                             message: generateMessage('friend_accepted', accepterUsername)
                         });
                         await notification.save();
+                        pushToChat(notification.toObject());
                         console.log(`[Notification] Saved friend accepted notification for ${payload.requesterId}`);
                     }
 
@@ -212,6 +333,74 @@ async function startRabbitMQConsumer() {
 }
 
 // --- REST API Endpoints ---
+
+// Create an invitation (sender invites receiver to read a book)
+app.post('/invitations', async (req, res) => {
+    try {
+        const { sender_id, receiver_id, book_id, book_title } = req.body;
+        if (!sender_id || !receiver_id || !book_id || !book_title) {
+            return res.status(400).json({ error: 'Missing fields' });
+        }
+
+        // Resolve sender username via gRPC
+        const senderInfo = await getUserById(sender_id);
+        const senderUsername = senderInfo.found ? senderInfo.username : 'Someone';
+
+        const invitation = new Invitation({ sender_id, receiver_id, sender_username: senderUsername, book_id, book_title });
+        await invitation.save();
+
+        // Create a notification linked to this invitation
+        const notification = new Notification({
+            receiver_id,
+            sender_id,
+            sender_username: senderUsername,
+            type: 'invitation',
+            message: generateMessage('invitation', senderUsername, { bookTitle: book_title }),
+            invitation_id: invitation._id.toString()
+        });
+        await notification.save();
+        pushToChat(notification.toObject());
+
+        res.json({ success: true, invitationId: invitation._id, notificationId: notification._id });
+    } catch (err) {
+        console.error('Create invitation error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// List invitations for a user
+app.get('/invitations/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const invitations = await Invitation.find({ receiver_id: userId }).sort({ created_at: -1 }).limit(50);
+        res.json(invitations);
+    } catch (err) {
+        console.error('Get invitations error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// Delete an invitation (clear)
+app.delete('/invitations/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const inv = await Invitation.findById(id);
+        if (!inv) return res.status(404).json({ error: 'Invitation not found' });
+
+        // Delete linked notification(s)
+        try {
+            await Notification.deleteMany({ invitation_id: id });
+        } catch (e) {
+            console.warn('[Invitation] Failed to delete linked notifications:', e);
+        }
+
+        await Invitation.findByIdAndDelete(id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Delete invitation error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
 
 // Get notifications for a user
 app.get('/notifications/:userId', async (req, res) => {
@@ -275,6 +464,19 @@ app.put('/notifications/:userId/read-all', async (req, res) => {
 app.delete('/notifications/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        const notif = await Notification.findById(id);
+        if (!notif) return res.status(404).json({ error: 'Notification not found' });
+
+        // If notification is linked to an invitation, delete that invitation as well
+        if (notif.invitation_id) {
+            try {
+                await Invitation.findByIdAndDelete(notif.invitation_id);
+                console.log(`[Invitation] Deleted linked invitation ${notif.invitation_id}`);
+            } catch (e) {
+                console.warn(`[Invitation] Failed to delete linked invitation ${notif.invitation_id}:`, e);
+            }
+        }
+
         await Notification.findByIdAndDelete(id);
         res.json({ success: true });
     } catch (err) {
@@ -287,6 +489,7 @@ app.delete('/notifications/:id', async (req, res) => {
 
 // Accept friend request from notification
 app.post('/notifications/:id/accept', async (req, res) => {
+    console.log('[POST /notifications/:id/accept] body:', req.body);
     try {
         const { id } = req.params;
         
@@ -303,16 +506,21 @@ app.post('/notifications/:id/accept', async (req, res) => {
         // Call auth-service via gRPC to accept
         // receiver_id = the person accepting, sender_id = the requester
         const result = await acceptFriendGrpc(notification.receiver_id, notification.sender_id);
+        console.log('[Notification] gRPC AcceptFriend result:', result);
 
+        let deleted = false;
         if (result.success) {
-            // Mark notification as read and update type
-            await Notification.findByIdAndUpdate(id, { 
-                read: true,
-                message: `You accepted ${notification.sender_username}'s friend request`
-            });
+            deleted = await deleteNotificationWithRetry(id, 2);
         }
 
-        res.json(result);
+        const responsePayload = {
+            success: !!result.success,
+            message: result.message || (result.success ? 'Accepted' : 'Failed'),
+            new_status: result.new_status || '',
+            deleted
+        };
+        console.log('[Notification] Responding to accept:', responsePayload);
+        return res.json(responsePayload);
     } catch (err) {
         console.error("Accept friend error:", err);
         res.status(500).json({ error: "Internal Server Error" });
@@ -321,6 +529,7 @@ app.post('/notifications/:id/accept', async (req, res) => {
 
 // Block user from notification
 app.post('/notifications/:id/block', async (req, res) => {
+    console.log('[POST /notifications/:id/block] body:', req.body);
     try {
         const { id } = req.params;
         
@@ -331,13 +540,21 @@ app.post('/notifications/:id/block', async (req, res) => {
 
         // Call auth-service via gRPC to block
         const result = await blockUserGrpc(notification.receiver_id, notification.sender_id);
+        console.log('[Notification] gRPC BlockUser result:', result);
 
+        let deleted = false;
         if (result.success) {
-            // Delete the notification
-            await Notification.findByIdAndDelete(id);
+            deleted = await deleteNotificationWithRetry(id, 2);
         }
 
-        res.json(result);
+        const responsePayload = {
+            success: !!result.success,
+            message: result.message || (result.success ? 'Blocked' : 'Failed'),
+            new_status: result.new_status || '',
+            deleted
+        };
+        console.log('[Notification] Responding to block:', responsePayload);
+        return res.json(responsePayload);
     } catch (err) {
         console.error("Block user error:", err);
         res.status(500).json({ error: "Internal Server Error" });
@@ -346,6 +563,7 @@ app.post('/notifications/:id/block', async (req, res) => {
 
 // Reject/decline friend request from notification
 app.post('/notifications/:id/reject', async (req, res) => {
+    console.log('[POST /notifications/:id/reject] body:', req.body);
     try {
         const { id } = req.params;
         
@@ -360,13 +578,21 @@ app.post('/notifications/:id/reject', async (req, res) => {
 
         // Call auth-service via gRPC to reject
         const result = await rejectFriendGrpc(notification.receiver_id, notification.sender_id);
+        console.log('[Notification] gRPC RejectFriend result:', result);
 
+        let deleted = false;
         if (result.success) {
-            // Delete the notification
-            await Notification.findByIdAndDelete(id);
+            deleted = await deleteNotificationWithRetry(id, 2);
         }
 
-        res.json(result);
+        const responsePayload = {
+            success: !!result.success,
+            message: result.message || (result.success ? 'Rejected' : 'Failed'),
+            new_status: result.new_status || '',
+            deleted
+        };
+        console.log('[Notification] Responding to reject:', responsePayload);
+        return res.json(responsePayload);
     } catch (err) {
         console.error("Reject friend error:", err);
         res.status(500).json({ error: "Internal Server Error" });
@@ -375,6 +601,7 @@ app.post('/notifications/:id/reject', async (req, res) => {
 
 // Direct friend actions (without notification ID)
 app.post('/friends/accept', async (req, res) => {
+    console.log('[POST /friends/accept] body:', req.body);
     try {
         const { userId, targetId } = req.body;
         if (!userId || !targetId) {
@@ -389,6 +616,7 @@ app.post('/friends/accept', async (req, res) => {
 });
 
 app.post('/friends/block', async (req, res) => {
+    console.log('[POST /friends/block] body:', req.body);
     try {
         const { userId, targetId } = req.body;
         if (!userId || !targetId) {
@@ -403,6 +631,7 @@ app.post('/friends/block', async (req, res) => {
 });
 
 app.post('/friends/reject', async (req, res) => {
+    console.log('[POST /friends/reject] body:', req.body);
     try {
         const { userId, targetId } = req.body;
         if (!userId || !targetId) {
@@ -416,12 +645,41 @@ app.post('/friends/reject', async (req, res) => {
     }
 });
 
+const MAX_RETRIES = 10;
+const RETRY_DELAY_MS = 5000;
+
+export async function connectMongoWithRetry(
+  mongoUri: string,
+  retries = MAX_RETRIES
+): Promise<void> {
+  try {
+    console.log('[MongoDB] Connecting...');
+    await mongoose.connect(mongoUri);
+    console.log('[MongoDB]  Connected');
+    } catch (err: any) {
+        console.error('[MongoDB]  Connection failed:', err?.message ?? err);
+
+    if (retries <= 0) {
+      console.error('[MongoDB] Exhausted retries. Exiting.');
+      process.exit(1);
+    }
+
+    console.log(
+      `[MongoDB] 🔁 Retrying in ${RETRY_DELAY_MS / 1000}s... (${retries} left)`
+    );
+
+    await new Promise((res) => setTimeout(res, RETRY_DELAY_MS));
+    return connectMongoWithRetry(mongoUri, retries - 1);
+  }
+}
+
+
 // --- Start Server ---
 async function start() {
     try {
         // Connect to MongoDB
         console.log(`[Notification] Connecting to MongoDB...`);
-        await mongoose.connect(MONGODB_URL);
+        await connectMongoWithRetry(MONGODB_URL);
         console.log(`[Notification] ✅ MongoDB connected`);
 
         // Initialize email service

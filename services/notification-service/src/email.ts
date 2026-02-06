@@ -1,4 +1,9 @@
 import nodemailer from 'nodemailer';
+import path from 'path';
+import dotenv from 'dotenv';
+
+// Load .env file inside container if present
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 // --- Configuration ---
 // For Development: Use Ethereal (Fake SMTP)
