@@ -553,6 +553,71 @@ app.delete('/notifications/:id', async (req, res) => {
     }
 });
 
+// ─── Favorites ────────────────────────────────────────────
+
+// GET /favorites - list all favorite book IDs for the logged-in user
+app.get('/favorites', async (req, res) => {
+    const token = req.cookies.token;
+    if (!token) return res.status(401).json({ error: "Not authenticated" });
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET) as any;
+        const result = await pool.query(
+            'SELECT gutenberg_id FROM favorite_books WHERE user_id = $1 ORDER BY gutenberg_id',
+            [decoded.user_id]
+        );
+        res.json(result.rows.map((r: any) => r.gutenberg_id));
+    } catch (err) {
+        console.error('[Favorites] GET error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// POST /favorites/:bookId - add a book to favorites
+app.post('/favorites/:bookId', async (req, res) => {
+    const token = req.cookies.token;
+    if (!token) return res.status(401).json({ error: "Not authenticated" });
+
+    const bookId = parseInt(req.params.bookId);
+    if (isNaN(bookId)) return res.status(400).json({ error: 'Invalid book ID' });
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET) as any;
+        await pool.query(
+            'INSERT INTO favorite_books (user_id, gutenberg_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [decoded.user_id, bookId]
+        );
+        res.json({ success: true, message: `Book ${bookId} added to favorites` });
+    } catch (err) {
+        console.error('[Favorites] POST error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// DELETE /favorites/:bookId - remove a book from favorites
+app.delete('/favorites/:bookId', async (req, res) => {
+    const token = req.cookies.token;
+    if (!token) return res.status(401).json({ error: "Not authenticated" });
+
+    const bookId = parseInt(req.params.bookId);
+    if (isNaN(bookId)) return res.status(400).json({ error: 'Invalid book ID' });
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET) as any;
+        const result = await pool.query(
+            'DELETE FROM favorite_books WHERE user_id = $1 AND gutenberg_id = $2',
+            [decoded.user_id, bookId]
+        );
+        if ((result.rowCount || 0) === 0) {
+            return res.status(404).json({ error: 'Book not in favorites' });
+        }
+        res.json({ success: true, message: `Book ${bookId} removed from favorites` });
+    } catch (err) {
+        console.error('[Favorites] DELETE error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
 const HTTP_PORT = process.env.HTTP_PORT || 3000;
 app.listen(HTTP_PORT, () => {
     console.log(`Auth Service REST running on port ${HTTP_PORT}`);

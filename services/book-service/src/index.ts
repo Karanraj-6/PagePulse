@@ -93,7 +93,8 @@ async function addToTrending(book: any) {
             title: book.title,
             authors: book.authors,
             formats: book.formats,
-            download_count: book.download_count
+            download_count: book.download_count,
+            summaries: book.summaries || []
         });
         await redis.lpush('trending_books', bookStr);
 
@@ -232,7 +233,7 @@ app.post('/books/:id/track', async (req, res) => {
 
     try {
         // Book data comes from frontend (already has the data from search)
-        const { title, authors, formats, download_count } = req.body;
+        const { title, authors, formats, download_count, summaries } = req.body;
 
         if (!title) {
             return res.status(400).json({ error: "Book title is required" });
@@ -243,7 +244,8 @@ app.post('/books/:id/track', async (req, res) => {
             title,
             authors: authors || [],
             formats: formats || {},
-            download_count: download_count || 0
+            download_count: download_count || 0,
+            summaries: summaries || []
         });
 
         res.json({ success: true, message: `Book ${bookId} added to trending` });
@@ -395,7 +397,8 @@ app.get('/books/:id', async (req, res) => {
                         title: book.title,
                         authors: book.authors,
                         formats: book.formats,
-                        download_count: book.download_count
+                        download_count: book.download_count,
+                        summaries: book.summaries || []
                     });
                     return res.json(book);
                 }
@@ -421,7 +424,8 @@ app.get('/books/:id', async (req, res) => {
             title: book.title,
             authors: book.authors,
             formats: book.formats,
-            download_count: book.download_count
+            download_count: book.download_count,
+            summaries: book.summaries || []
         });
 
         res.json(book);
