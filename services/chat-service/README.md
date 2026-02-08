@@ -41,19 +41,102 @@ graph TD
 
 ## HTTP API
 
-The service provides REST endpoints to initiate conversations. Use these to get a `conversationId` before connecting via WebSocket.
+
+The service provides REST endpoints for chat management. All endpoints return JSON.
 
 ### 1. Initiate Private Chat 🔒
 - **Endpoint**: `POST /private`
-- **Body**: `{ "myId": "UUID", "targetUserId": "UUID" }`
-- **Response**: `{ "conversationId": "UUID", "created": boolean }`
-- **Description**: Finds an existing private chat with the target user or creates a new one. **Enforces Blocking Checks.**
+- **Body:**
+    ```json
+    {
+        "myId": "UUID",
+        "targetUserId": "UUID"
+    }
+    ```
+- **Response:**
+    - If chat exists:
+        ```json
+        { "conversationId": "UUID", "created": false }
+        ```
+    - If new chat created:
+        ```json
+        { "conversationId": "UUID", "created": true }
+        ```
+- **Description:** Finds or creates a private chat between two users. Checks for block status (cannot chat if blocked).
 
-### 2. Initiate Reading Session 📖
+### 2. Get Private Chat Message History
+- **Endpoint**: `GET /private/:conversationId/messages`
+- **Query Params:**
+    - `limit` (default 50): Max messages to return
+    - `before`: ISO timestamp for pagination (fetch older messages)
+- **Response:**
+    ```json
+    {
+        "messages": [
+            {
+                "message_id": "UUID",
+                "conversation_id": "UUID",
+                "sender_id": "UUID",
+                "content": "string",
+                "sent_at": "2024-01-01T12:00:00.000Z"
+            }
+        ],
+        "hasMore": true
+    }
+    ```
+- **Description:** Returns messages for a private chat, newest first (chronological in response). Supports pagination.
+
+### 3. Get User's Conversations List
+- **Endpoint**: `GET /conversations/:userId`
+- **Response:**
+    ```json
+    {
+        "conversations": [
+            {
+                "conversation_id": "UUID",
+                "type": "private",
+                "created_at": "2024-01-01T12:00:00.000Z",
+                "last_message": {
+                    "message_id": "UUID",
+                    "sender_id": "UUID",
+                    "content": "string",
+                    "sent_at": "2024-01-01T12:00:00.000Z"
+                },
+                "other_participants": ["UUID"]
+            }
+        ]
+    }
+    ```
+- **Description:** Lists all private conversations for a user, with the latest message and other participant IDs.
+
+### 4. Get Chat User Details (Proxy to Auth Service)
+- **Endpoint**: `GET /chatusers/:id`
+- **Response:**
+    ```json
+    {
+        "id": "UUID",
+        "username": "string",
+        "email": "string",
+        "avatar": "string|null"
+    }
+    ```
+- **Description:** Returns user details for chat display. Fetched via gRPC from auth-service.
+
+### 5. Initiate/Invite Book Reading Session 📖
 - **Endpoint**: `POST /reading`
-- **Body**: `{ "myId": "UUID", "bookId": 123, "friendUsername": "optional_string" }`
-- **Response**: `{ "conversationId": "UUID" }`
-- **Description**: Creates a NEW book session. The caller becomes the **Host**. Optionally invites a friend immediately.
+- **Body:**
+    ```json
+    {
+        "myId": "UUID",
+        "bookId": 123,
+        "friendUsername": "optional_string"
+    }
+    ```
+- **Response:**
+    ```json
+    { "conversationId": "UUID" }
+    ```
+- **Description:** Creates a new book reading session. The caller is the host. Optionally invites a friend by username.
 
 ## WebSocket API
 
@@ -81,10 +164,20 @@ Connect to the service via: `ws://localhost:4000` (or via API Gateway at `/api/c
 | `reading_message` | Server -> Client | `{ sender, content, time }` | Broadcasts the live message to the room. |
 | `session_ended` | Server -> Client | `null` | Sent when the **Host** disconnects. Clients should close the chat UI. |
 
+#### ➤ Public Book Room
+
+| Event | Direction | Payload | Description |
+| :--- | :--- | :--- | :--- |
+| `join_book_room` | Client -> Server | `{ bookId, userId }` | Joins a public book room for group chat. |
+| `leave_book_room` | Client -> Server | `{ bookId, userId }` | Leaves the public book room. |
+| `user_joined_book` | Server -> Client | `{ userId, count }` | Notifies room when a user joins. |
+| `user_left_book` | Server -> Client | `{ userId, count }` | Notifies room when a user leaves. |
+| `request_active_users` | Client -> Server | `{ bookId }` | Requests the list of active users in a book room. |
+| `active_users` | Server -> Client | `[userId, ...]` | List of user IDs currently in the room. |
+
 ## Database Schema
 
 ```sql
--- Conversations (Both Private and Book types)
 CREATE TABLE conversations (
     conversation_id UUID PRIMARY KEY,
     type TEXT CHECK (type IN ('private', 'book')),
@@ -93,7 +186,6 @@ CREATE TABLE conversations (
     created_at TIMESTAMP
 );
 
--- Messages (Only for Private chats)
 CREATE TABLE messages (
     message_id UUID PRIMARY KEY,
     conversation_id UUID REFERENCES conversations,
@@ -101,6 +193,33 @@ CREATE TABLE messages (
     sent_at TIMESTAMP
 );
 ```
+
+### Table: `conversations`
+| Column           | Type    | Description                                 |
+|------------------|---------|---------------------------------------------|
+| conversation_id  | UUID    | Primary key, unique conversation identifier |
+| type             | TEXT    | 'private' or 'book'                         |
+| book_id          | INT     | Book ID for reading sessions (nullable)      |
+| host_user_id     | UUID    | Host user for book sessions (nullable)       |
+| created_at       | TIMESTAMP | Creation timestamp                        |
+
+### Table: `conversation_participants`
+| Column           | Type    | Description                                 |
+|------------------|---------|---------------------------------------------|
+| conversation_id  | UUID    | Conversation ID (foreign key)               |
+| user_id          | UUID    | User ID (participant)                       |
+| (PK: conversation_id, user_id) |         | Composite primary key                |
+
+### Table: `messages`
+| Column           | Type    | Description                                 |
+|------------------|---------|---------------------------------------------|
+| message_id       | UUID    | Primary key, unique message identifier      |
+| conversation_id  | UUID    | Conversation ID (foreign key)               |
+| sender_id        | UUID    | User ID of sender                           |
+| content          | TEXT    | Message content                             |
+| sent_at          | TIMESTAMP | When the message was sent                 |
+
+**Note:** Only private chats are persisted in the `messages` table. Reading session and public book room messages are ephemeral and not stored in the database.
 
 ## Client Integration Flow
 

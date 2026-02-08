@@ -13,14 +13,35 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3
 import multer from 'multer';
 import Redis from 'ioredis';
 
+
 const app = express();
 app.use(cookieParser());
+
+// Health check endpoint for Kubernetes
+app.get('/health', (req, res) => res.send('OK'));
+
+// --- CORS: Allow local dev and Vercel prod ---
+const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:4173",
+    "https://pagepulse-ebon.vercel.app"
+];
 app.use(cors({
-    origin: ["http://localhost:5173", "http://localhost:3000"],
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error("Not allowed by CORS"));
+        }
+    },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 }));
 app.use(express.json());
+
+// --- Cookie config for prod/dev ---
+const isProd = process.env.NODE_ENV === "production";
 
 const JWT_SECRET = process.env.JWT_SECRET || '89b88155b09089801b90128faa96d4af7e92b7860f7762527107f5cd427b0c8c';
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://rabbitmq:5672';
@@ -170,11 +191,13 @@ app.post('/auth/register', async (req, res) => {
             { expiresIn: '1h' }
         );
 
-        res.cookie('token', token, {
+
+        res.cookie("token", token, {
             httpOnly: true,
-            secure: false,
-            sameSite: 'lax',
-            maxAge: 3600000
+            secure: isProd,
+            sameSite: isProd ? "none" : "lax",
+            path: "/",
+            maxAge: 60 * 60 * 1000
         });
 
         res.json({ userId, username, token, message: "User created" });
@@ -269,11 +292,13 @@ app.post('/auth/login', async (req, res) => {
         );
 
         // Set cookie for session-based auth (same as register)
-        res.cookie('token', token, {
+
+        res.cookie("token", token, {
             httpOnly: true,
-            secure: false,
-            sameSite: 'lax',
-            maxAge: 3600000
+            secure: isProd,
+            sameSite: isProd ? "none" : "lax",
+            path: "/",
+            maxAge: 60 * 60 * 1000
         });
 
         res.json({
@@ -293,12 +318,13 @@ app.post('/auth/login', async (req, res) => {
 
 // Logout
 app.post('/auth/logout', (req, res) => {
-    res.clearCookie('token', {
-        httpOnly: true,
-        path: '/',
-        sameSite: 'lax', // Must match login setting
-        secure: false // Set true if using https
-    });
+
+        res.clearCookie("token", {
+            httpOnly: true,
+            secure: isProd,
+            sameSite: isProd ? "none" : "lax",
+            path: "/",
+        });
     res.json({ success: true });
 });
 

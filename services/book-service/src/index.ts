@@ -10,12 +10,32 @@ import { runIngestion } from './ingestion/worker';
 const app = express();
 app.use(express.json());
 
+// Health check endpoint for Kubernetes
+app.get('/health', (req, res) => res.send('OK'));
+
 // Enable CORS
+
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
+
+const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:4173",
+    "https://pagepulse-ebon.vercel.app"
+];
+
+app.use(cookieParser());
 app.use(cors({
-    origin: ["http://localhost:5173", "http://localhost:3000"],
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error("Not allowed by CORS"));
+        }
+    },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 }));
 
 // --- Database Setup ---

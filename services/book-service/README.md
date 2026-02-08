@@ -1,3 +1,41 @@
+### 7. Get Ingestion Status (`GET /books/:id/ingestion-status`)
+Checks the ingestion progress for a specific book. Useful for polling the backend to see if a book's content is ready for reading.
+
+- **Endpoint**: `GET /books/:id/ingestion-status`
+- **Description**: Returns the current ingestion status for the book. Status can be `not_started`, `processing`, `complete`, or `failed`.
+
+**Possible Response Schemas:**
+
+*Ingestion not started:*
+```json
+{
+  "status": "not_started"
+}
+```
+
+*Ingestion in progress:*
+```json
+{
+  "status": "processing",
+  "message": "Book is being ingested..."
+}
+```
+
+*Ingestion complete:*
+```json
+{
+  "status": "complete",
+  "page_count": 450
+}
+```
+
+*Ingestion failed:*
+```json
+{
+  "status": "failed",
+  "error": "Download error from Gutendex"
+}
+```
 # Book Service 📚
 
 The **Book Service** is the central library content manager for PagePulse. It handles book ingestion from Gutendex, stores EPUB content (parsed into pages), maintains categories, and tracks trending books.
@@ -56,6 +94,17 @@ A dedicated table for high-performance trending queries (synced with Redis).
 ---
 
 ## 🚀 API Reference
+
+### 0. Service Health Check (`GET /`)
+Returns a simple message indicating the Book Service is running. Useful for health checks and deployment verification.
+
+- **Endpoint**: `GET /`
+- **Response**: Plain text message.
+
+**Example Response:**
+```
+Book Service is Running (Production Mode)
+```
 
 ### 1. Get Books List (`GET /books`)
 Retrieves a list of books with optional filtering.
@@ -204,6 +253,43 @@ Retrieves the top 20 most recently accessed/downloaded books.
      ... (Full Book Object)
   }
 ]
+```
+
+### 6. Track Book Click (`POST /books/:id/track`)
+Adds a book to the trending list when a user clicks on it (e.g., from SearchPage to BookDetailsPage).
+
+- **Endpoint**: `POST /books/:id/track`
+- **Description**: Should be called by the frontend when a user navigates to a book's details. Updates trending books in Redis.
+- **Request Body:**
+  - `title` (string, required): Book title
+  - `authors` (array, optional): List of authors
+  - `formats` (object, optional): Book formats (e.g., EPUB, JPEG)
+  - `download_count` (number, optional): Download count
+  - `summaries` (array, optional): Book summaries
+
+**Example Request:**
+```json
+POST /books/84/track
+{
+  "title": "Frankenstein; Or, The Modern Prometheus",
+  "authors": [
+    { "name": "Shelley, Mary Wollstonecraft", "birth_year": 1797, "death_year": 1851 }
+  ],
+  "formats": {
+    "application/epub+zip": "https://www.gutenberg.org/ebooks/84.epub3.images",
+    "image/jpeg": "https://www.gutenberg.org/cache/epub/84/pg84.cover.medium.jpg"
+  },
+  "download_count": 86638,
+  "summaries": ["A classic gothic novel."]
+}
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "message": "Book 84 added to trending"
+}
 ```
 
 ---

@@ -1,15 +1,29 @@
+# Build stage
+FROM node:18-alpine AS builder
+
+WORKDIR /usr/src/app
+
+COPY services/book-service/package*.json ./
+RUN npm install
+
+COPY services/book-service/ ./
+COPY packages/protos ./packages/protos
+
+RUN npm run build
+
+# Production stage
 FROM node:18-alpine
 
 WORKDIR /usr/src/app
 
-# Copy shared packages
-COPY packages/protos ./packages/protos
+ENV NODE_ENV=production
 
-# Setup Service
-WORKDIR /usr/src/app/services/book-service
+COPY --from=builder /usr/src/app/dist ./dist
+COPY --from=builder /usr/src/app/packages/protos ./packages/protos
 COPY services/book-service/package*.json ./
-RUN npm install
-COPY services/book-service/ .
+
+RUN npm ci --omit=dev
 
 EXPOSE 3000 50052
-CMD ["npm", "start"]
+
+CMD ["node", "dist/index.js"]

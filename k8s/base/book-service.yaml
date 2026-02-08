@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: book-service
+  name: book-deployment
 spec:
   replicas: 1
   selector:
@@ -13,9 +13,9 @@ spec:
         app: book-service
     spec:
       containers:
-      - name: book-service
-        image: book-service
-        imagePullPolicy: Never
+      - name: book-container
+        image: yourdockerhub/book-service:latest
+        imagePullPolicy: IfNotPresent
         resources:
           requests:
             cpu: "100m"
@@ -23,52 +23,36 @@ spec:
         ports:
         - containerPort: 3000
         - containerPort: 50052
-        env:
-        - name: HTTP_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: HTTP_PORT
-        - name: GRPC_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: GRPC_PORT_BOOK
-        - name: RABBITMQ_URL
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: RABBITMQ_URL
-        - name: DB_URL
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: DB_URL
-        - name: REDIS_URL
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: REDIS_URL
-        - name: REDIS_PORT
-          valueFrom:
-             configMapKeyRef:
-               name: pagepulse-config
-               key: REDIS_PORT
+        envFrom:
+        - secretRef:
+            name: pagepulse-secrets
+        - configMapRef:
+            name: pagepulse-config
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: book-service
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: book-service
   ports:
   - name: http
     port: 3000
     targetPort: 3000
-    nodePort: 30003
   - name: grpc
     port: 50052
     targetPort: 50052
-    nodePort: 30004

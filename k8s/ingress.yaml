@@ -1,16 +1,31 @@
+# Auth Service Ingress (REST)
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: pagepulse-rest-ingress
+  name: auth-ingress
   annotations:
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "2"
+
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
 spec:
+  tls:
+    - hosts:
+        - api.pagepulse.app
+      secretName: pagepulse-tls
   rules:
   - http:
       paths:
-      # REST APIs
       - path: /api/auth(/|$)(.*)
         pathType: ImplementationSpecific
         backend:
@@ -18,6 +33,31 @@ spec:
             name: auth-service
             port:
               number: 3000
+
+# Book Service Ingress (REST)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: book-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/limit-rps: "60"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+spec:
+  rules:
+  - http:
+      paths:
       - path: /api/books(/|$)(.*)
         pathType: ImplementationSpecific
         backend:
@@ -25,6 +65,32 @@ spec:
             name: book-service
             port:
               number: 3000
+
+# Chat Service Ingress (REST)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/limit-rps: "60"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "4"
+
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
+spec:
+  rules:
+  - http:
+      paths:
       - path: /api/chat(/|$)(.*)
         pathType: ImplementationSpecific
         backend:
@@ -32,23 +98,59 @@ spec:
             name: chat-service
             port:
               number: 3000
-      # NOTE: notification-service is a RabbitMQ consumer only - no HTTP endpoint
+
+# Notification Service Ingress (REST)
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: pagepulse-grpc-ingress
+  name: notification-ingress
   annotations:
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
-    # Enable HTTP/2 for gRPC - only applies to this Ingress
-    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    nginx.ingress.kubernetes.io/limit-rps: "30"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
 spec:
   rules:
   - http:
       paths:
-      # gRPC services
+      - path: /api/notification(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: notification-service
+            port:
+              number: 3000
+
+# Auth Service Ingress (gRPC)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: auth-grpc-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+spec:
+  tls:
+    - hosts:
+        - api.pagepulse.app
+      secretName: pagepulse-tls
+  rules:
+  - http:
+      paths:
       - path: /grpc/auth(/|$)(.*)
         pathType: ImplementationSpecific
         backend:
@@ -56,6 +158,22 @@ spec:
             name: auth-service
             port:
               number: 50051
+
+# Book Service Ingress (gRPC)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: book-grpc-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    nginx.ingress.kubernetes.io/limit-rps: "60"
+spec:
+  rules:
+  - http:
+      paths:
       - path: /grpc/book(/|$)(.*)
         pathType: ImplementationSpecific
         backend:
@@ -63,3 +181,27 @@ spec:
             name: book-service
             port:
               number: 50052
+
+# Chat Service Ingress (gRPC)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-grpc-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    nginx.ingress.kubernetes.io/limit-rps: "60"
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /grpc/chat(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: chat-service
+            port:
+              number: 50053
+

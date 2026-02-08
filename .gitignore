@@ -35,3 +35,5 @@ coverage/
 
 # Docker
 .docker/
+
+k8s/base/secrets.yaml

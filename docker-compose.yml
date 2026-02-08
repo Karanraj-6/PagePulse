@@ -1,20 +1,5 @@
 version: '3.8'
-
 services:
-  # --- Infrastructure ---
-  nginx-gateway:
-    build:
-      context: ./apps/api-gateway
-      dockerfile: Dockerfile
-    ports: [ "${NGINX_PORT}:80" ]
-    depends_on:
-      - auth-service
-      - book-service
-      - chat-service
-
-    networks:
-      - pagepulse-network
-
   rabbitmq:
     image: rabbitmq:3-management
     ports:
@@ -33,7 +18,8 @@ services:
 
   redis:
     image: redis:alpine
-    ports: [ "${REDIS_PORT}:6379" ]
+    ports:
+      - "${REDIS_PORT}:6379"
     networks:
       - pagepulse-network
     healthcheck:
@@ -44,7 +30,8 @@ services:
 
   mongodb:
     image: mongo:7
-    ports: [ "${MONGODB_PORT}:27017" ]
+    ports:
+      - "${MONGODB_PORT}:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD}
@@ -63,7 +50,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    ports: [ "${POSTGRES_PORT}:5432" ]
+    ports:
+      - "${POSTGRES_PORT}:5432"
     networks:
       - pagepulse-network
     healthcheck:
@@ -72,14 +60,14 @@ services:
       timeout: 5s
       retries: 5
 
-  # Separate Postgres for Chat Service (Microservices Pattern)
   postgres-chat:
     image: postgres:15
     environment:
       POSTGRES_USER: ${POSTGRES_CHAT_USER}
       POSTGRES_PASSWORD: ${POSTGRES_CHAT_PASSWORD}
       POSTGRES_DB: ${POSTGRES_CHAT_DB}
-    ports: [ "${POSTGRES_CHAT_PORT}:5432" ]
+    ports:
+      - "${POSTGRES_CHAT_PORT}:5432"
     networks:
       - pagepulse-network
     healthcheck:
@@ -88,13 +76,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # --- Services ---
   auth-service:
     build:
       context: .
       dockerfile: services/auth-service/Dockerfile
-    volumes:
-      - ./packages/protos:/usr/src/app/packages/protos
     environment:
       - GRPC_PORT=${GRPC_PORT_AUTH}
       - HTTP_PORT=${HTTP_PORT}
@@ -117,9 +102,6 @@ services:
     build:
       context: .
       dockerfile: services/book-service/Dockerfile
-    volumes:
-      - ./packages/protos:/usr/src/app/packages/protos
-      - ./services/book-service/src:/usr/src/app/services/book-service/src
     environment:
       - GRPC_PORT=${GRPC_PORT_BOOK}
       - HTTP_PORT=${HTTP_PORT}
@@ -146,9 +128,6 @@ services:
       - DB_URL=${DB_URL_CHAT}
       - JWT_SECRET=${JWT_SECRET}
       - AUTH_GRPC_URL=auth-service:${GRPC_PORT_AUTH}
-    volumes:
-      - ./packages/protos:/usr/src/app/packages/protos
-      - ./services/chat-service/src:/usr/src/app/services/chat-service/src
     depends_on:
       postgres-chat:
         condition: service_healthy
@@ -161,9 +140,6 @@ services:
     build:
       context: .
       dockerfile: services/notification-service/Dockerfile
-    volumes:
-      - ./services/notification-service/src:/app/src
-      - ./packages/protos:/app/packages/protos
     environment:
       - HTTP_PORT=${HTTP_PORT}
       - RABBITMQ_URL=${RABBITMQ_URL}

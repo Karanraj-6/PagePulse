@@ -1,11 +1,13 @@
+
 import express from 'express';
-import cors from 'cors';
+import cors, { CorsOptionsDelegate } from 'cors';
 import mongoose from 'mongoose';
 import amqp from 'amqplib';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import path from 'path';
 import dotenv from 'dotenv';
+import { sendEmail, initEmailService } from './email';
 
 // Load .env as fallback (for local dev without Docker).
 // In Docker, env vars come from docker-compose env_file.
@@ -27,13 +29,34 @@ process.env.SMTP_PASS = stripQuotes(process.env.SMTP_PASS);
 console.log('[Config] MONGODB_URL set?', !!process.env.MONGODB_URL);
 console.log('[Config] SMTP_HOST set?', !!process.env.SMTP_HOST);
 
-import { initEmailService, sendEmail } from './email';
+
+const cookieParser = require('cookie-parser');
+
+const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:4173",
+    "https://pagepulse-ebon.vercel.app"
+];
 
 const app = express();
-app.use(cors({
-    origin: ["http://localhost:5173", "http://localhost:3000"],
-    credentials: true
-}));
+app.use(cookieParser());
+const corsOptions: CorsOptionsDelegate = (req, callback) => {
+    // req.headers.origin is the correct way to get the Origin header in CORS delegate
+    const origin = req.headers.origin;
+    if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, {
+            origin: true,
+            credentials: true,
+            methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        });
+    } else {
+        callback(new Error("Not allowed by CORS"), {
+            origin: false
+        });
+    }
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // --- Environment Variables ---

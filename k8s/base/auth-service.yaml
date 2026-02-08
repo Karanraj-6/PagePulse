@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: auth-service
+  name: auth-deployment
 spec:
   replicas: 1
   selector:
@@ -13,9 +13,9 @@ spec:
         app: auth-service
     spec:
       containers:
-      - name: auth-service
-        image: auth-service
-        imagePullPolicy: Never
+      - name: auth-container
+        image: yourdockerhub/auth-service:latest
+        imagePullPolicy: IfNotPresent
         resources:
           requests:
             cpu: "100m"
@@ -23,67 +23,36 @@ spec:
         ports:
         - containerPort: 3000
         - containerPort: 50051
-        env:
-        - name: HTTP_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: HTTP_PORT
-        - name: GRPC_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: GRPC_PORT_AUTH
-        - name: DB_URL
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: DB_URL
-        - name: RABBITMQ_URL
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: RABBITMQ_URL
-        - name: JWT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: JWT_SECRET
-        - name: AWS_REGION
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: AWS_REGION
-        - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: AWS_ACCESS_KEY_ID
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: AWS_SECRET_ACCESS_KEY
-        - name: S3_BUCKET_NAME
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: S3_BUCKET_NAME
+        envFrom:
+        - secretRef:
+            name: pagepulse-secrets
+        - configMapRef:
+            name: pagepulse-config
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: auth-service
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: auth-service
   ports:
   - name: http
     port: 3000
     targetPort: 3000
-    nodePort: 30001
   - name: grpc
     port: 50051
     targetPort: 50051
-    nodePort: 30002

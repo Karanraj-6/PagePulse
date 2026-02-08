@@ -3,24 +3,47 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { Pool } from 'pg';
 import path from 'path';
-import fs from 'fs';
-import * as crypto from 'crypto';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 
+import fs from 'fs';
+
+const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:4173",
+    "https://pagepulse-ebon.vercel.app"
+];
+
 const app = express();
+app.use(cookieParser());
+// Health check endpoint for Kubernetes
+app.get('/health', (req, res) => res.send('OK'));
 app.use(cors({
-    origin: ["http://localhost:5173", "http://localhost:3000"],
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error("Not allowed by CORS"));
+        }
+    },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 }));
-app.use(express.json()); // Enable JSON body parsing
+app.use(express.json());
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
     cors: {
-        origin: ["http://localhost:5173", "http://localhost:3000"],
+        origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+            if (!origin || allowedOrigins.includes(origin)) {
+                callback(null, true);
+            } else {
+                callback(new Error("Not allowed by CORS"));
+            }
+        },
         methods: ["GET", "POST"],
         credentials: true
     }

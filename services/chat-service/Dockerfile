@@ -1,15 +1,29 @@
+# Build stage
+FROM node:18-alpine AS builder
+
+WORKDIR /usr/src/app
+
+COPY services/chat-service/package*.json ./
+RUN npm install
+
+COPY services/chat-service/ ./
+COPY packages/protos ./packages/protos
+
+RUN npm run build
+
+# Production stage
 FROM node:18-alpine
 
 WORKDIR /usr/src/app
 
-# Copy shared packages (if needed in future, currently consistent with others)
-COPY packages/protos ./packages/protos
+ENV NODE_ENV=production
 
-# Setup Service
-WORKDIR /usr/src/app/services/chat-service
+COPY --from=builder /usr/src/app/dist ./dist
+COPY --from=builder /usr/src/app/packages/protos ./packages/protos
 COPY services/chat-service/package*.json ./
-RUN npm install
-COPY services/chat-service/ .
 
-EXPOSE 3000
-CMD ["npm", "start"]
+RUN npm ci --omit=dev
+
+EXPOSE 3000 50053
+
+CMD ["node", "dist/index.js"]

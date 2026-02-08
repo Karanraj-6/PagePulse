@@ -1,3 +1,4 @@
+# RabbitMQ Deployment with Persistent Storage
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,9 +28,31 @@ spec:
               name: pagepulse-secrets
               key: RABBITMQ_DEFAULT_PASS
         ports:
-        - containerPort: 5672
-        - containerPort: 15672
+        - containerPort: 5672   # AMQP port
+        - containerPort: 15672  # Management UI port
+        volumeMounts:
+        - name: rabbitmq-data
+          mountPath: /var/lib/rabbitmq
+      volumes:
+      - name: rabbitmq-data
+        persistentVolumeClaim:
+          claimName: rabbitmq-pvc
+
 ---
+# PersistentVolumeClaim for RabbitMQ
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# RabbitMQ Service
 apiVersion: v1
 kind: Service
 metadata:

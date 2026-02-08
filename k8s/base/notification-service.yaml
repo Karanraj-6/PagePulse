@@ -13,41 +13,41 @@ spec:
         app: notification-service
     spec:
       containers:
-      - name: notification-service
-        image: notification-service
-        imagePullPolicy: Never
-        resources:
-          requests:
-            cpu: "50m"
-            memory: "64Mi"
-        env:
-        - name: RABBITMQ_URL
-          valueFrom:
-            secretKeyRef:
-              name: pagepulse-secrets
-              key: RABBITMQ_URL
-        - name: SMTP_HOST
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: SMTP_HOST
-        - name: SMTP_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: SMTP_PORT
-        - name: SMTP_USER
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: SMTP_USER
-        - name: SMTP_PASS
-          valueFrom:
-            configMapKeyRef:
-              name: pagepulse-config
-              key: SMTP_PASS
-        - name: PUBLIC_URL
-          valueFrom:
-            configMapKeyRef:
-               name: pagepulse-config
-               key: PUBLIC_URL
+        - name: notification-service
+          image: yourdockerhub/notification-service:latest
+          imagePullPolicy: IfNotPresent
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+
+          ports:
+            - containerPort: 3000
+
+          # Load MOST vars automatically
+          envFrom:
+            - secretRef:
+                name: pagepulse-secrets
+            - configMapRef:
+                name: pagepulse-config
+
+          # Explicit service-to-service addresses
+          env:
+            - name: AUTH_GRPC_URL
+              value: "auth-service:50051"
+            - name: CHAT_GRPC_URL
+              value: "chat-service:50053"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+spec:
+  type: ClusterIP
+  selector:
+    app: notification-service
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

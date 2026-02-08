@@ -1,0 +1,141 @@
+name: PagePulse CI/CD
+# Trigger pipeline on push to main branch or PR merge
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  IMAGE_TAG: ${{ github.sha }}  # Use commit SHA as Docker image tag
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      # Docker Hub credentials
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+      # K8s Cluster credentials
+      KUBECONFIG_CONTENT: ${{ secrets.KUBECONFIG }}
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Set up Docker
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      # Step 3: Build and push Docker images with SHA tags
+      - name: Build and push auth-service image
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ env.IMAGE_TAG }}
+          context: ./verify_backend.ts/auth-service
+          file: ./verify_backend.ts/auth-service/Dockerfile
+
+      - name: Build and push book-service image
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/book-service:${{ env.IMAGE_TAG }}
+          context: ./verify_backend.ts/book-service
+          file: ./verify_backend.ts/book-service/Dockerfile
+
+      - name: Build and push chat-service image
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/chat-service:${{ env.IMAGE_TAG }}
+          context: ./verify_backend.ts/chat-service
+          file: ./verify_backend.ts/chat-service/Dockerfile
+
+      - name: Build and push notification-service image
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/notification-service:${{ env.IMAGE_TAG }}
+          context: ./verify_backend.ts/notification-service
+          file: ./verify_backend.ts/notification-service/Dockerfile
+
+      # Step 4: Configure kubeconfig
+      - name: Set up Kubeconfig
+        run: |
+          echo "${KUBECONFIG_CONTENT}" > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      # Step 5: Apply infrastructure (DB, Redis, RabbitMQ)
+      - name: Apply infrastructure manifests
+        run: kubectl apply -f k8s/infrastructure/
+
+      # Step 6.1: Apply Secrets (manually create from GitHub Secrets)
+      - name: Create pagepulse-secrets in Kubernetes
+        run: |
+          kubectl create secret generic pagepulse-secrets \
+            --from-literal=POSTGRES_USER=${{ secrets.POSTGRES_USER }} \
+            --from-literal=POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
+            --from-literal=POSTGRES_CHAT_USER=${{ secrets.POSTGRES_CHAT_USER }} \
+            --from-literal=POSTGRES_CHAT_PASSWORD=${{ secrets.POSTGRES_CHAT_PASSWORD }} \
+            --from-literal=DB_URL=${{ secrets.DB_URL }} \
+            --from-literal=DB_URL_CHAT=${{ secrets.DB_URL_CHAT }} \
+            --from-literal=RABBITMQ_DEFAULT_USER=${{ secrets.RABBITMQ_DEFAULT_USER }} \
+            --from-literal=RABBITMQ_DEFAULT_PASS=${{ secrets.RABBITMQ_DEFAULT_PASS }} \
+            --from-literal=RABBITMQ_URL=${{ secrets.RABBITMQ_URL }} \
+            --from-literal=MONGODB_USER=${{ secrets.MONGODB_USER }} \
+            --from-literal=MONGODB_PASSWORD=${{ secrets.MONGODB_PASSWORD }} \
+            --from-literal=MONGODB_DB=${{ secrets.MONGODB_DB }} \
+            --from-literal=MONGODB_URL=${{ secrets.MONGODB_URL }} \
+            --from-literal=JWT_SECRET=${{ secrets.JWT_SECRET }} \
+            --from-literal=SMTP_USER=${{ secrets.SMTP_USER }} \
+            --from-literal=SMTP_PASS=${{ secrets.SMTP_PASS }} \
+            --from-literal=AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+            --from-literal=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+            --from-literal=S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # Step 6.2: Apply ConfigMap
+      - name: Apply ConfigMap
+        run: kubectl apply -f k8s/base/config-map.yaml
+
+      # Step 7: Apply Microservices Deployments
+      - name: Apply base manifests
+        run: kubectl apply -f k8s/base/
+
+      # Step 8: Update Deployments with SHA images
+      - name: Set deployment images to sha and wait for rollout
+        run: |
+          kubectl set image deployment/auth-deployment auth-container=${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ env.IMAGE_TAG }}
+          kubectl rollout status deployment/auth-deployment
+
+          kubectl set image deployment/book-deployment book-container=${{ secrets.DOCKERHUB_USERNAME }}/book-service:${{ env.IMAGE_TAG }}
+          kubectl rollout status deployment/book-deployment
+
+          kubectl set image deployment/chat-deployment chat-container=${{ secrets.DOCKERHUB_USERNAME }}/chat-service:${{ env.IMAGE_TAG }}
+          kubectl rollout status deployment/chat-deployment
+
+          kubectl set image deployment/notification-deployment notification-container=${{ secrets.DOCKERHUB_USERNAME }}/notification-service:${{ env.IMAGE_TAG }}
+          kubectl rollout status deployment/notification-deployment
+
+      # Step 9: Apply Ingress
+      - name: Apply Ingress
+        run: kubectl apply -f k8s/ingress.yaml
+
+      # Step 10: Apply HPA
+      - name: Apply HPA
+        run: kubectl apply -f k8s/base/hpa.yaml
+
+      # Step 11: Verify Deployment
+      - name: Get all pods
+        run: kubectl get pods -o wide
+
+      - name: Get all services
+        run: kubectl get svc -o wide
