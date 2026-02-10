@@ -164,7 +164,7 @@ function hashPassword(password: string): string {
 // --- REST API Endpoints ---
 
 // 1. Register
-app.post('/auth/register', async (req, res) => {
+app.post('/register', async (req, res) => {
     const { username, email, password } = req.body;
     if (!username || !email || !password) return res.status(400).json({ error: "Missing fields" });
 
@@ -211,7 +211,7 @@ app.post('/auth/register', async (req, res) => {
 });
 
 // 2.5 Get Current User (Me)
-app.get('/auth/me', async (req, res) => {
+app.get('/me', async (req, res) => {
     const token = req.cookies.token;
     if (!token) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -252,7 +252,7 @@ app.get('/auth/me', async (req, res) => {
 });
 
 // 2. Login
-app.post('/auth/login', async (req, res) => {
+app.post('/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: "Missing fields" });
 
@@ -317,14 +317,14 @@ app.post('/auth/login', async (req, res) => {
 });
 
 // Logout
-app.post('/auth/logout', (req, res) => {
+app.post('/logout', (req, res) => {
 
-        res.clearCookie("token", {
-            httpOnly: true,
-            secure: isProd,
-            sameSite: isProd ? "none" : "lax",
-            path: "/",
-        });
+    res.clearCookie("token", {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? "none" : "lax",
+        path: "/",
+    });
     res.json({ success: true });
 });
 
@@ -465,7 +465,7 @@ app.get('/users', async (req, res) => {
         if (!query) {
             return res.json([]);
         }
-        
+
         // Trigram similarity search with ILIKE fallback
         const result = await pool.query(
             `SELECT u.user_id, u.username, similarity(u.username, $1) as score,
@@ -488,16 +488,16 @@ app.get('/users', async (req, res) => {
     }
 });
 
-    // 3.5. Search Addable Friends (like /users but exclude any existing friend/requests)
+// 3.5. Search Addable Friends (like /users but exclude any existing friend/requests)
 app.get('/addfriends', async (req, res) => {
-        const { q, userId } = req.query;
-        try {
-            const query = typeof q === 'string' ? q.trim() : '';
-            if (!query) return res.json([]);
-            if (!userId || typeof userId !== 'string') return res.status(400).json({ error: "Missing userId" });
+    const { q, userId } = req.query;
+    try {
+        const query = typeof q === 'string' ? q.trim() : '';
+        if (!query) return res.json([]);
+        if (!userId || typeof userId !== 'string') return res.status(400).json({ error: "Missing userId" });
 
-            const result = await pool.query(
-                `SELECT u.user_id, u.username, similarity(u.username, $1) as score,
+        const result = await pool.query(
+            `SELECT u.user_id, u.username, similarity(u.username, $1) as score,
                         pp.photo_url
                  FROM users u
                  LEFT JOIN profile_photos pp ON pp.user_id = u.user_id
@@ -510,19 +510,19 @@ app.get('/addfriends', async (req, res) => {
                    )
                  ORDER BY score DESC, u.username ASC
                  LIMIT 10`,
-                [query, `%${query}%`, userId]
-            );
+            [query, `%${query}%`, userId]
+        );
 
-            res.json(result.rows.map((r: any) => ({
-                user_id: r.user_id,
-                username: r.username,
-                avatar: r.photo_url ? avatarProxyUrl(r.user_id) : null
-            })));
-        } catch (err) {
-            console.error("AddFriends Search Error:", err);
-            res.status(500).json({ error: "Internal Server Error" });
-        }
-    });
+        res.json(result.rows.map((r: any) => ({
+            user_id: r.user_id,
+            username: r.username,
+            avatar: r.photo_url ? avatarProxyUrl(r.user_id) : null
+        })));
+    } catch (err) {
+        console.error("AddFriends Search Error:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
 
 // 4. Friend Management
 app.get('/friends', async (req, res) => {
@@ -876,12 +876,12 @@ function getUserById(call: any, callback: any) {
         .then(res => {
             if (res.rows.length > 0) {
                 const user = res.rows[0];
-                callback(null, { 
-                    user_id: user.user_id, 
-                    username: user.username, 
+                callback(null, {
+                    user_id: user.user_id,
+                    username: user.username,
                     email: user.email,
                     avatar: user.photo_url ? avatarProxyUrl(user.user_id) : '',
-                    found: true 
+                    found: true
                 });
             } else {
                 callback(null, { found: false });

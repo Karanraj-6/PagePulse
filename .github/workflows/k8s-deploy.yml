@@ -17,7 +17,12 @@ jobs:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
       # K8s Cluster credentials
-      KUBECONFIG_CONTENT: ${{ secrets.KUBECONFIG }}
+      OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+      OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}      # e.g., us-ashburn-1
+      OKE_CLUSTER_OCID: ${{ secrets.OKE_CLUSTER_OCID }}   # The ID of your cluster
 
     steps:
       # Step 1: Checkout code
@@ -25,6 +30,7 @@ jobs:
         uses: actions/checkout@v3
 
       # Step 2: Set up Docker
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
@@ -40,44 +46,57 @@ jobs:
         with:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ env.IMAGE_TAG }}
-          context: ./verify_backend.ts/auth-service
-          file: ./verify_backend.ts/auth-service/Dockerfile
+          context: .
+          file: services/auth-service/Dockerfile
 
       - name: Build and push book-service image
         uses: docker/build-push-action@v5
         with:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/book-service:${{ env.IMAGE_TAG }}
-          context: ./verify_backend.ts/book-service
-          file: ./verify_backend.ts/book-service/Dockerfile
+          context: .
+          file: services/book-service/Dockerfile
 
       - name: Build and push chat-service image
         uses: docker/build-push-action@v5
         with:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/chat-service:${{ env.IMAGE_TAG }}
-          context: ./verify_backend.ts/chat-service
-          file: ./verify_backend.ts/chat-service/Dockerfile
+          context: .
+          file: services/chat-service/Dockerfile
 
       - name: Build and push notification-service image
         uses: docker/build-push-action@v5
         with:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/notification-service:${{ env.IMAGE_TAG }}
-          context: ./verify_backend.ts/notification-service
-          file: ./verify_backend.ts/notification-service/Dockerfile
+          context: .
+          file: services/notification-service/Dockerfile
 
-      # Step 4: Configure kubeconfig
-      - name: Set up Kubeconfig
+      # Step 4.1: Install OCI CLI
+      # This allows the runner to talk to Oracle Cloud
+      - name: Configure OCI CLI
+        uses: oracle-actions/setup-oci-cli@v1.2.1
+        with:
+          user: ${{ secrets.OCI_CLI_USER }}
+          fingerprint: ${{ secrets.OCI_CLI_FINGERPRINT }}
+          key_file: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+          tenancy: ${{ secrets.OCI_CLI_TENANCY }}
+          region: ${{ secrets.OCI_CLI_REGION }}
+
+      # Step 4.2: Generate OKE Kubeconfig
+      # Instead of pasting a static file, we generate a fresh valid one
+      - name: Get OKE Kubeconfig
         run: |
-          echo "${KUBECONFIG_CONTENT}" > $HOME/.kube/config
+          mkdir -p $HOME/.kube
+          oci ce cluster create-kubeconfig --cluster-id ${{ secrets.OKE_CLUSTER_OCID }} --file $HOME/.kube/config --region ${{ secrets.OCI_CLI_REGION }} --token-version 2.0.0 
           chmod 600 $HOME/.kube/config
 
-      # Step 5: Apply infrastructure (DB, Redis, RabbitMQ)
-      - name: Apply infrastructure manifests
-        run: kubectl apply -f k8s/infrastructure/
+      # Step 5: Apply ConfigMap FIRST (infrastructure needs configMapKeyRef)
+      - name: Apply ConfigMap
+        run: kubectl apply -f k8s/base/config-map.yaml
 
-      # Step 6.1: Apply Secrets (manually create from GitHub Secrets)
+      # Step 6: Create Secrets from GitHub Secrets
       - name: Create pagepulse-secrets in Kubernetes
         run: |
           kubectl create secret generic pagepulse-secrets \
@@ -102,15 +121,20 @@ jobs:
             --from-literal=S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      # Step 6.2: Apply ConfigMap
-      - name: Apply ConfigMap
-        run: kubectl apply -f k8s/base/config-map.yaml
+      # Step 7: Apply infrastructure (DB, Redis, RabbitMQ)
+      - name: Apply infrastructure manifests
+        run: kubectl apply -f k8s/infrastructure/
 
-      # Step 7: Apply Microservices Deployments
+      # Step 8: Apply Microservices Deployments (excluding secrets.yaml)
       - name: Apply base manifests
-        run: kubectl apply -f k8s/base/
+        run: |
+          kubectl apply -f k8s/base/auth-service.yaml
+          kubectl apply -f k8s/base/book-service.yaml
+          kubectl apply -f k8s/base/chat-service.yaml
+          kubectl apply -f k8s/base/notification-service.yaml
+          kubectl apply -f k8s/base/hpa.yaml
 
-      # Step 8: Update Deployments with SHA images
+      # Step 9: Update Deployments with SHA images
       - name: Set deployment images to sha and wait for rollout
         run: |
           kubectl set image deployment/auth-deployment auth-container=${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ env.IMAGE_TAG }}
@@ -125,13 +149,9 @@ jobs:
           kubectl set image deployment/notification-deployment notification-container=${{ secrets.DOCKERHUB_USERNAME }}/notification-service:${{ env.IMAGE_TAG }}
           kubectl rollout status deployment/notification-deployment
 
-      # Step 9: Apply Ingress
+      # Step 10: Apply Ingress
       - name: Apply Ingress
         run: kubectl apply -f k8s/ingress.yaml
-
-      # Step 10: Apply HPA
-      - name: Apply HPA
-        run: kubectl apply -f k8s/base/hpa.yaml
 
       # Step 11: Verify Deployment
       - name: Get all pods

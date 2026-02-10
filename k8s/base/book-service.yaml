@@ -28,6 +28,9 @@ spec:
             name: pagepulse-secrets
         - configMapRef:
             name: pagepulse-config
+        env:
+        - name: GRPC_PORT
+          value: "50052"
         readinessProbe:
           httpGet:
             path: /health

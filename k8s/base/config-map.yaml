@@ -7,11 +7,14 @@ data:
 
   # PostgreSQL
   POSTGRES_DB: "pagepulse_db"
+  POSTGRES_USER: "pagepulse-user"
   POSTGRES_CHAT_DB: "chat_db"
+  POSTGRES_CHAT_USER: "pagepulse-chat"
   POSTGRES_PORT: "5432"
   POSTGRES_CHAT_PORT: "5432"
 
   # RabbitMQ
+  RABBITMQ_DEFAULT_USER: "guest"
   RABBITMQ_PORT: "5672"
   RABBITMQ_MGMT_PORT: "15672"
 
@@ -33,5 +36,8 @@ data:
   AWS_REGION: "us-east-1"
 
   # Public URLs
-  PUBLIC_URL: "https://api.pagepulse.app"
+  PUBLIC_URL: "https://68.233.107.28.nip.io"
   APP_PUBLIC_URL: "https://pagepulse-ebon.vercel.app"
+
+  #MongoDB
+  MONGODB_PORT: "27017"

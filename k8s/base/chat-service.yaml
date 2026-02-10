@@ -33,6 +33,11 @@ spec:
           value: "auth-service:50051"
         - name: GRPC_PORT
           value: "50053"
+        - name: DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: pagepulse-secrets
+              key: DB_URL_CHAT
         readinessProbe:
           httpGet:
             path: /health

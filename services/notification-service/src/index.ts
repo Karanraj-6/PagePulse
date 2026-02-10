@@ -59,6 +59,8 @@ const corsOptions: CorsOptionsDelegate = (req, callback) => {
 app.use(cors(corsOptions));
 app.use(express.json());
 
+app.get('/health', (req, res) => res.send('OK'));
+
 // --- Environment Variables ---
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://rabbitmq:5672';
 const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://admin:mongo_pass_123@mongodb:27017/notifications_db?authSource=admin';
@@ -176,10 +178,10 @@ const notificationSchema = new mongoose.Schema({
     receiver_id: { type: String, required: true, index: true },
     sender_id: { type: String, required: true },
     sender_username: { type: String },
-    type: { 
-        type: String, 
+    type: {
+        type: String,
         enum: ['friend_requested', 'friend_accepted', 'welcome', 'system', 'invitation'],
-        required: true 
+        required: true
     },
     message: { type: String, required: true },
     read: { type: Boolean, default: false },
@@ -531,7 +533,7 @@ app.post('/notifications/:id/accept', async (req, res) => {
     console.log('[POST /notifications/:id/accept] body:', req.body);
     try {
         const { id } = req.params;
-        
+
         // Get the notification
         const notification = await Notification.findById(id);
         if (!notification) {
@@ -571,7 +573,7 @@ app.post('/notifications/:id/block', async (req, res) => {
     console.log('[POST /notifications/:id/block] body:', req.body);
     try {
         const { id } = req.params;
-        
+
         const notification = await Notification.findById(id);
         if (!notification) {
             return res.status(404).json({ error: "Notification not found" });
@@ -605,7 +607,7 @@ app.post('/notifications/:id/reject', async (req, res) => {
     console.log('[POST /notifications/:id/reject] body:', req.body);
     try {
         const { id } = req.params;
-        
+
         const notification = await Notification.findById(id);
         if (!notification) {
             return res.status(404).json({ error: "Notification not found" });
@@ -688,28 +690,28 @@ const MAX_RETRIES = 10;
 const RETRY_DELAY_MS = 5000;
 
 export async function connectMongoWithRetry(
-  mongoUri: string,
-  retries = MAX_RETRIES
+    mongoUri: string,
+    retries = MAX_RETRIES
 ): Promise<void> {
-  try {
-    console.log('[MongoDB] Connecting...');
-    await mongoose.connect(mongoUri);
-    console.log('[MongoDB]  Connected');
+    try {
+        console.log('[MongoDB] Connecting...');
+        await mongoose.connect(mongoUri);
+        console.log('[MongoDB]  Connected');
     } catch (err: any) {
         console.error('[MongoDB]  Connection failed:', err?.message ?? err);
 
-    if (retries <= 0) {
-      console.error('[MongoDB] Exhausted retries. Exiting.');
-      process.exit(1);
+        if (retries <= 0) {
+            console.error('[MongoDB] Exhausted retries. Exiting.');
+            process.exit(1);
+        }
+
+        console.log(
+            `[MongoDB] 🔁 Retrying in ${RETRY_DELAY_MS / 1000}s... (${retries} left)`
+        );
+
+        await new Promise((res) => setTimeout(res, RETRY_DELAY_MS));
+        return connectMongoWithRetry(mongoUri, retries - 1);
     }
-
-    console.log(
-      `[MongoDB] 🔁 Retrying in ${RETRY_DELAY_MS / 1000}s... (${retries} left)`
-    );
-
-    await new Promise((res) => setTimeout(res, RETRY_DELAY_MS));
-    return connectMongoWithRetry(mongoUri, retries - 1);
-  }
 }
 
 

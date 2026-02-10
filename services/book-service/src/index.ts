@@ -208,10 +208,6 @@ async function prepopulateCategories() {
 
 // --- Routes ---
 
-app.get('/', (req, res) => {
-    res.send('Book Service is Running (Production Mode)');
-});
-
 // GET /categories (Cached)
 app.get('/categories', async (req, res) => {
     try {
@@ -232,7 +228,7 @@ app.get('/categories', async (req, res) => {
 });
 
 // GET /books/trending (From Redis Deque)
-app.get('/books/trending', async (req, res) => {
+app.get('/trending', async (req, res) => {
     try {
         const list = await redis.lrange('trending_books', 0, -1);
         const books = list.map(s => JSON.parse(s));
@@ -245,7 +241,7 @@ app.get('/books/trending', async (req, res) => {
 
 // POST /books/:id/track - Add to trending when user clicks on a book
 // Frontend calls this when navigating from SearchPage to BookDetailsPage
-app.post('/books/:id/track', async (req, res) => {
+app.post('/:id/track', async (req, res) => {
     const bookId = parseInt(req.params.id);
     if (isNaN(bookId)) {
         return res.status(400).json({ error: "Invalid Book ID" });
@@ -276,7 +272,7 @@ app.post('/books/:id/track', async (req, res) => {
 });
 
 // GET /books (List & Search)
-app.get('/books', async (req, res) => {
+app.get('/', async (req, res) => {
     const { page = 1, category, search } = req.query;
     const offset = (Number(page) - 1) * 20;
 
@@ -397,7 +393,7 @@ app.get('/books', async (req, res) => {
 
 // GET /books/:id (Metadata) - BookDetailsPage
 // Adds to trending when user clicks on a book
-app.get('/books/:id', async (req, res) => {
+app.get('/:id', async (req, res) => {
     const bookId = parseInt(req.params.id);
     if (isNaN(bookId)) return res.status(400).json({ error: "Invalid Book ID" });
 
@@ -458,7 +454,7 @@ app.get('/books/:id', async (req, res) => {
 
 // GET /books/:id/pages
 // Returns paginated content for iframe consumption
-app.get('/books/:id/pages', async (req, res) => {
+app.get('/:id/pages', async (req, res) => {
     const bookId = parseInt(req.params.id);
     if (isNaN(bookId)) {
         return res.status(400).json({ error: "Invalid Book ID" });
@@ -583,7 +579,7 @@ app.get('/books/:id/pages', async (req, res) => {
 });
 
 // GET /books/:id/ingestion-status - Check ingestion progress
-app.get('/books/:id/ingestion-status', async (req, res) => {
+app.get('/:id/ingestion-status', async (req, res) => {
     const bookId = parseInt(req.params.id);
     if (isNaN(bookId)) {
         return res.status(400).json({ error: "Invalid Book ID" });

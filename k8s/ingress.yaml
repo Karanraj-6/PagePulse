@@ -21,18 +21,19 @@ metadata:
 spec:
   tls:
     - hosts:
-        - api.pagepulse.app
+        - 68.233.107.28.nip.io
       secretName: pagepulse-tls
   rules:
-  - http:
-      paths:
-      - path: /api/auth(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: auth-service
-            port:
-              number: 3000
+    - host: 68.233.107.28.nip.io
+      http:
+        paths:
+          - path: /api/auth(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: auth-service
+                port:
+                  number: 3000
 
 # Book Service Ingress (REST)
 ---
@@ -55,16 +56,21 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
     nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
 spec:
+  tls:
+    - hosts:
+        - 68.233.107.28.nip.io
+      secretName: pagepulse-tls
   rules:
-  - http:
-      paths:
-      - path: /api/books(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: book-service
-            port:
-              number: 3000
+    - host: 68.233.107.28.nip.io
+      http:
+        paths:
+          - path: /api/books(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: book-service
+                port:
+                  number: 3000
 
 # Chat Service Ingress (REST)
 ---
@@ -86,18 +92,22 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
     nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
     nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
-
 spec:
+  tls:
+    - hosts:
+        - 68.233.107.28.nip.io
+      secretName: pagepulse-tls
   rules:
-  - http:
-      paths:
-      - path: /api/chat(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: chat-service
-            port:
-              number: 3000
+    - host: 68.233.107.28.nip.io
+      http:
+        paths:
+          - path: /api/chat(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: chat-service
+                port:
+                  number: 3000
 
 # Notification Service Ingress (REST)
 ---
@@ -119,89 +129,19 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
     nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
     nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
-
-spec:
-  rules:
-  - http:
-      paths:
-      - path: /api/notification(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: notification-service
-            port:
-              number: 3000
-
-# Auth Service Ingress (gRPC)
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: auth-grpc-ingress
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-    nginx.ingress.kubernetes.io/limit-rps: "5"
 spec:
   tls:
     - hosts:
-        - api.pagepulse.app
+        - 68.233.107.28.nip.io
       secretName: pagepulse-tls
   rules:
-  - http:
-      paths:
-      - path: /grpc/auth(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: auth-service
-            port:
-              number: 50051
-
-# Book Service Ingress (gRPC)
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: book-grpc-ingress
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-    nginx.ingress.kubernetes.io/limit-rps: "60"
-spec:
-  rules:
-  - http:
-      paths:
-      - path: /grpc/book(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: book-service
-            port:
-              number: 50052
-
-# Chat Service Ingress (gRPC)
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: chat-grpc-ingress
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-    nginx.ingress.kubernetes.io/limit-rps: "60"
-spec:
-  rules:
-  - http:
-      paths:
-      - path: /grpc/chat(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: chat-service
-            port:
-              number: 50053
-
+    - host: 68.233.107.28.nip.io
+      http:
+        paths:
+          - path: /api/notification(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: notification-service
+                port:
+                  number: 3000
