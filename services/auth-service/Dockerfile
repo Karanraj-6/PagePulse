@@ -20,7 +20,8 @@ ENV NODE_ENV=production
 
 COPY --from=builder /usr/src/app/dist ./dist
 COPY --from=builder /usr/src/app/packages/protos ./packages/protos
-COPY services/auth-service/package*.json ./
+COPY --from=builder /usr/src/app/package-lock.json ./
+COPY services/auth-service/package.json ./
 
 RUN npm ci --omit=dev
 
