@@ -73,16 +73,25 @@ jobs:
           context: .
           file: services/notification-service/Dockerfile
 
-      # Step 4.1: Install OCI CLI
-      # This allows the runner to talk to Oracle Cloud
+      # Step 4.1: Install and configure OCI CLI
+      - name: Install OCI CLI
+        run: |
+          pip install oci-cli
+
       - name: Configure OCI CLI
-        uses: oracle-actions/setup-oci-cli@v1.2.1
-        with:
-          user: ${{ secrets.OCI_CLI_USER }}
-          fingerprint: ${{ secrets.OCI_CLI_FINGERPRINT }}
-          key_file: ${{ secrets.OCI_CLI_KEY_CONTENT }}
-          tenancy: ${{ secrets.OCI_CLI_TENANCY }}
-          region: ${{ secrets.OCI_CLI_REGION }}
+        run: |
+          mkdir -p ~/.oci
+          echo "${{ secrets.OCI_CLI_KEY_CONTENT }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config << EOF
+          [DEFAULT]
+          user=${{ secrets.OCI_CLI_USER }}
+          fingerprint=${{ secrets.OCI_CLI_FINGERPRINT }}
+          tenancy=${{ secrets.OCI_CLI_TENANCY }}
+          region=${{ secrets.OCI_CLI_REGION }}
+          key_file=~/.oci/oci_api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
 
       # Step 4.2: Generate OKE Kubeconfig
       # Instead of pasting a static file, we generate a fresh valid one
