@@ -151,7 +151,13 @@ jobs:
 
       # Step 8: Apply infrastructure (DB, Redis, RabbitMQ) + ClusterIssuer
       - name: Apply infrastructure manifests
-        run: kubectl apply -f k8s/infrastructure/
+        run: |
+          kubectl apply -f k8s/infrastructure/
+          echo "Restarting StatefulSets to pick up image changes..."
+          kubectl rollout restart statefulset/postgres || true
+          kubectl rollout restart statefulset/postgres-chat || true
+          kubectl rollout restart deployment/redis || true
+          kubectl rollout restart deployment/rabbitmq || true
 
       # Step 8.5: Wait for infrastructure to be ready
       - name: Wait for infrastructure pods
