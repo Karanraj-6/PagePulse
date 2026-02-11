@@ -204,14 +204,7 @@ jobs:
           kubectl set image deployment/notification-deployment notification-container=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/notification-service:${{ env.IMAGE_TAG }}
           kubectl rollout status deployment/notification-deployment --timeout=300s
 
-      # Step 11: Install NGINX Ingress Controller (required to process Ingress resources)
-      - name: Install NGINX Ingress Controller
-        run: |
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.6/deploy/static/provider/cloud/deploy.yaml
-          echo "Waiting for ingress-nginx controller to be ready..."
-          kubectl wait --namespace ingress-nginx --for=condition=Ready pod -l app.kubernetes.io/component=controller --timeout=300s
-
-      # Step 11.1: Apply Ingress rules
+      # Step 11: Apply Ingress rules
       - name: Apply Ingress
         run: kubectl apply -f k8s/ingress.yaml
 
