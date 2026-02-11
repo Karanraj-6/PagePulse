@@ -147,16 +147,27 @@ jobs:
       # Step 8.5: Wait for infrastructure to be ready
       - name: Wait for infrastructure pods
         run: |
-          echo "Waiting for PostgreSQL..."
-          kubectl wait --for=condition=Ready pod -l app=postgres --timeout=120s || true
-          echo "Waiting for PostgreSQL Chat..."
-          kubectl wait --for=condition=Ready pod -l app=postgres-chat --timeout=120s || true
-          echo "Waiting for Redis..."
-          kubectl wait --for=condition=Ready pod -l app=redis --timeout=60s || true
-          echo "Waiting for RabbitMQ..."
-          kubectl wait --for=condition=Ready pod -l app=rabbitmq --timeout=60s || true
-          echo "Infrastructure status:"
+          echo "=== Current PVC status ==="
+          kubectl get pvc
+          echo ""
+          echo "=== Current Pod status ==="
           kubectl get pods
+          echo ""
+          echo "Waiting for PostgreSQL..."
+          kubectl wait --for=condition=Ready pod -l app=postgres --timeout=180s || true
+          echo "Waiting for PostgreSQL Chat..."
+          kubectl wait --for=condition=Ready pod -l app=postgres-chat --timeout=180s || true
+          echo "Waiting for Redis..."
+          kubectl wait --for=condition=Ready pod -l app=redis --timeout=120s || true
+          echo "Waiting for RabbitMQ..."
+          kubectl wait --for=condition=Ready pod -l app=rabbitmq --timeout=120s || true
+          echo ""
+          echo "=== Final infrastructure status ==="
+          kubectl get pods
+          kubectl get pvc
+          echo ""
+          echo "=== Events (last 5 min) ==="
+          kubectl get events --sort-by=.lastTimestamp | tail -30
 
       # Step 9: Apply Microservices Deployments (excluding secrets.yaml)
       - name: Apply base manifests
