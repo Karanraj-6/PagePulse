@@ -12,6 +12,8 @@ spec:
       labels:
         app: redis
     spec:
+      imagePullSecrets:
+      - name: dockerhub-secret
       containers:
       - name: redis
         image: redis:alpine

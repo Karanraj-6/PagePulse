@@ -12,6 +12,8 @@ spec:
       labels:
         app: notification-service
     spec:
+      imagePullSecrets:
+      - name: dockerhub-secret
       containers:
         - name: notification-container
           image: yourdockerhub/notification-service:latest

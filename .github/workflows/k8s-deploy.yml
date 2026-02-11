@@ -132,6 +132,15 @@ jobs:
             --from-literal=S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      # Step 6.1: Create Docker Hub pull secret for authenticated image pulls
+      - name: Create Docker Hub pull secret
+        run: |
+          kubectl create secret docker-registry dockerhub-secret \
+            --docker-server=https://index.docker.io/v1/ \
+            --docker-username=${{ secrets.DOCKERHUB_USERNAME }} \
+            --docker-password=${{ secrets.DOCKERHUB_PASSWORD }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       # Step 7: Install cert-manager (required for ClusterIssuer CRD)
       - name: Install cert-manager
         run: |

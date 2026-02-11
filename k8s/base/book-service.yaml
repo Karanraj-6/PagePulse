@@ -12,6 +12,8 @@ spec:
       labels:
         app: book-service
     spec:
+      imagePullSecrets:
+      - name: dockerhub-secret
       containers:
       - name: book-container
         image: yourdockerhub/book-service:latest

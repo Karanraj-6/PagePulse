@@ -12,9 +12,11 @@ spec:
       labels:
         app: chat-service
     spec:
+      imagePullSecrets:
+      - name: dockerhub-secret
       containers:
       - name: chat-container
-        image: yourdockerhub/chat-service:${IMAGE_TAG}
+        image: yourdockerhub/chat-service:latest
         imagePullPolicy: IfNotPresent
         resources:
           requests:

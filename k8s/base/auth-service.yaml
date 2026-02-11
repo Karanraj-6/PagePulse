@@ -12,6 +12,8 @@ spec:
       labels:
         app: auth-service
     spec:
+      imagePullSecrets:
+      - name: dockerhub-secret
       containers:
       - name: auth-container
         image: yourdockerhub/auth-service:latest
