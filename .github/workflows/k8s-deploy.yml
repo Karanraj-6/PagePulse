@@ -238,3 +238,9 @@ jobs:
           echo ""
           echo "=== Notification Service Logs ==="
           kubectl logs deployment/notification-deployment --tail=50 2>/dev/null || true
+          echo ""
+          echo "=== PostgreSQL Logs ==="
+          kubectl logs pod/postgres-0 --tail=50 2>/dev/null || true
+          echo ""
+          echo "=== PostgreSQL Chat Logs ==="
+          kubectl logs pod/postgres-chat-0 --tail=50 2>/dev/null || true
