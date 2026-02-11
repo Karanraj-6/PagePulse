@@ -144,7 +144,21 @@ jobs:
       - name: Apply infrastructure manifests
         run: kubectl apply -f k8s/infrastructure/
 
-      # Step 8: Apply Microservices Deployments (excluding secrets.yaml)
+      # Step 8.5: Wait for infrastructure to be ready
+      - name: Wait for infrastructure pods
+        run: |
+          echo "Waiting for PostgreSQL..."
+          kubectl wait --for=condition=Ready pod -l app=postgres --timeout=120s || true
+          echo "Waiting for PostgreSQL Chat..."
+          kubectl wait --for=condition=Ready pod -l app=postgres-chat --timeout=120s || true
+          echo "Waiting for Redis..."
+          kubectl wait --for=condition=Ready pod -l app=redis --timeout=60s || true
+          echo "Waiting for RabbitMQ..."
+          kubectl wait --for=condition=Ready pod -l app=rabbitmq --timeout=60s || true
+          echo "Infrastructure status:"
+          kubectl get pods
+
+      # Step 9: Apply Microservices Deployments (excluding secrets.yaml)
       - name: Apply base manifests
         run: |
           kubectl apply -f k8s/base/auth-service.yaml
@@ -153,28 +167,50 @@ jobs:
           kubectl apply -f k8s/base/notification-service.yaml
           kubectl apply -f k8s/base/hpa.yaml
 
-      # Step 9: Update Deployments with SHA images
+      # Step 10: Update Deployments with SHA images
       - name: Set deployment images to sha and wait for rollout
         run: |
           kubectl set image deployment/auth-deployment auth-container=${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ env.IMAGE_TAG }}
-          kubectl rollout status deployment/auth-deployment
+          kubectl rollout status deployment/auth-deployment --timeout=300s
 
           kubectl set image deployment/book-deployment book-container=${{ secrets.DOCKERHUB_USERNAME }}/book-service:${{ env.IMAGE_TAG }}
-          kubectl rollout status deployment/book-deployment
+          kubectl rollout status deployment/book-deployment --timeout=300s
 
           kubectl set image deployment/chat-deployment chat-container=${{ secrets.DOCKERHUB_USERNAME }}/chat-service:${{ env.IMAGE_TAG }}
-          kubectl rollout status deployment/chat-deployment
+          kubectl rollout status deployment/chat-deployment --timeout=300s
 
           kubectl set image deployment/notification-deployment notification-container=${{ secrets.DOCKERHUB_USERNAME }}/notification-service:${{ env.IMAGE_TAG }}
-          kubectl rollout status deployment/notification-deployment
+          kubectl rollout status deployment/notification-deployment --timeout=300s
 
-      # Step 10: Apply Ingress
+      # Step 11: Apply Ingress
       - name: Apply Ingress
         run: kubectl apply -f k8s/ingress.yaml
 
-      # Step 11: Verify Deployment
+      # Step 12: Verify Deployment
       - name: Get all pods
         run: kubectl get pods -o wide
 
       - name: Get all services
         run: kubectl get svc -o wide
+
+      # Step 13: Debug on failure - show pod logs if something crashed
+      - name: Debug pod status on failure
+        if: failure()
+        run: |
+          echo "=== Pod Status ==="
+          kubectl get pods -o wide
+          echo ""
+          echo "=== Describe failing pods ==="
+          kubectl describe pods --field-selector=status.phase!=Running 2>/dev/null || true
+          echo ""
+          echo "=== Auth Service Logs ==="
+          kubectl logs deployment/auth-deployment --tail=50 2>/dev/null || true
+          echo ""
+          echo "=== Book Service Logs ==="
+          kubectl logs deployment/book-deployment --tail=50 2>/dev/null || true
+          echo ""
+          echo "=== Chat Service Logs ==="
+          kubectl logs deployment/chat-deployment --tail=50 2>/dev/null || true
+          echo ""
+          echo "=== Notification Service Logs ==="
+          kubectl logs deployment/notification-deployment --tail=50 2>/dev/null || true
