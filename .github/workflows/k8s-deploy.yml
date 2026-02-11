@@ -149,22 +149,21 @@ jobs:
           kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager -n cert-manager
           kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager-webhook -n cert-manager
 
-      # Step 8: Clean up ALL stale pods from previous failed deployments
-      - name: Clean up stale pods and old ReplicaSets
-        run: |
-          echo "Deleting ALL non-running pods..."
-          kubectl delete pods --field-selector=status.phase=Failed --ignore-not-found=true || true
-          kubectl delete pods --field-selector=status.phase=Pending --ignore-not-found=true || true
-          echo "Force-deleting stuck CrashLoopBackOff and ImageInspectError pods..."
-          kubectl get pods --no-headers | grep -E 'ImageInspectError|InvalidImageName|ImagePullBackOff|CrashLoopBackOff|ErrImagePull' | awk '{print $1}' | xargs -r kubectl delete pod --force --grace-period=0 || true
-          echo "Pod status after cleanup:"
-          kubectl get pods || true
-
-      # Step 8.1: Apply infrastructure (DB, Redis, RabbitMQ) + ClusterIssuer
+      # Step 8: Apply infrastructure FIRST (update specs in K8s before cleanup)
       - name: Apply infrastructure manifests
         run: kubectl apply -f k8s/infrastructure/
 
-      # Step 8.2: Wait for infrastructure to be FULLY ready before deploying services
+      # Step 8.1: Clean up ALL stale/crashed pods AFTER apply so they recreate with NEW spec
+      - name: Clean up stale pods
+        run: |
+          echo "Force-deleting all non-running pods so they recreate with updated specs..."
+          kubectl get pods --no-headers | grep -v 'Running' | awk '{print $1}' | xargs -r kubectl delete pod --force --grace-period=0 || true
+          echo "Waiting 10s for pods to be recreated..."
+          sleep 10
+          echo "Pod status after cleanup:"
+          kubectl get pods
+
+      # Step 8.2: Wait for infrastructure to be FULLY ready
       - name: Wait for infrastructure pods
         run: |
           echo "=== PVC status ==="
@@ -182,16 +181,15 @@ jobs:
           echo "=== All infrastructure is READY ==="
           kubectl get pods
 
-      # Step 9: Apply Microservices Deployments (excluding secrets.yaml)
+      # Step 9: Apply service manifests with REAL Docker Hub username (not placeholder)
       - name: Apply base manifests
         run: |
-          kubectl apply -f k8s/base/auth-service.yaml
-          kubectl apply -f k8s/base/book-service.yaml
-          kubectl apply -f k8s/base/chat-service.yaml
-          kubectl apply -f k8s/base/notification-service.yaml
+          for f in k8s/base/auth-service.yaml k8s/base/book-service.yaml k8s/base/chat-service.yaml k8s/base/notification-service.yaml; do
+            sed "s|docker.io/yourdockerhub|docker.io/${{ secrets.DOCKERHUB_USERNAME }}|g" "$f" | kubectl apply -f -
+          done
           kubectl apply -f k8s/base/hpa.yaml
 
-      # Step 10: Update Deployments with SHA images
+      # Step 10: Update Deployments with SHA-tagged images and wait for rollout
       - name: Set deployment images to sha and wait for rollout
         run: |
           kubectl set image deployment/auth-deployment auth-container=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ env.IMAGE_TAG }}
