@@ -149,51 +149,40 @@ jobs:
           kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager -n cert-manager
           kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager-webhook -n cert-manager
 
-      # Step 8: Apply infrastructure (DB, Redis, RabbitMQ) + ClusterIssuer
-      - name: Apply infrastructure manifests
+      # Step 8: Clean up ALL stale pods from previous failed deployments
+      - name: Clean up stale pods and old ReplicaSets
         run: |
-          kubectl apply -f k8s/infrastructure/
-          echo "Restarting StatefulSets to pick up image changes..."
-          kubectl rollout restart statefulset/postgres || true
-          kubectl rollout restart statefulset/postgres-chat || true
-          kubectl rollout restart deployment/redis || true
-          kubectl rollout restart deployment/rabbitmq || true
-
-      # Step 8.5: Wait for infrastructure to be ready
-      - name: Wait for infrastructure pods
-        run: |
-          echo "=== Current PVC status ==="
-          kubectl get pvc
-          echo ""
-          echo "=== Current Pod status ==="
-          kubectl get pods
-          echo ""
-          echo "Waiting for PostgreSQL..."
-          kubectl wait --for=condition=Ready pod -l app=postgres --timeout=180s || true
-          echo "Waiting for PostgreSQL Chat..."
-          kubectl wait --for=condition=Ready pod -l app=postgres-chat --timeout=180s || true
-          echo "Waiting for Redis..."
-          kubectl wait --for=condition=Ready pod -l app=redis --timeout=120s || true
-          echo "Waiting for RabbitMQ..."
-          kubectl wait --for=condition=Ready pod -l app=rabbitmq --timeout=120s || true
-          echo ""
-          echo "=== Final infrastructure status ==="
-          kubectl get pods
-          kubectl get pvc
-          echo ""
-          echo "=== Events (last 5 min) ==="
-          kubectl get events --sort-by=.lastTimestamp | tail -30
-
-      # Step 9: Clean up stale pods from previous failed deployments
-      - name: Clean up stale pods
-        run: |
-          echo "Deleting pods stuck in error states..."
+          echo "Deleting ALL non-running pods..."
           kubectl delete pods --field-selector=status.phase=Failed --ignore-not-found=true || true
           kubectl delete pods --field-selector=status.phase=Pending --ignore-not-found=true || true
-          echo "Current pod status after cleanup:"
+          echo "Force-deleting stuck CrashLoopBackOff and ImageInspectError pods..."
+          kubectl get pods --no-headers | grep -E 'ImageInspectError|InvalidImageName|ImagePullBackOff|CrashLoopBackOff|ErrImagePull' | awk '{print $1}' | xargs -r kubectl delete pod --force --grace-period=0 || true
+          echo "Pod status after cleanup:"
+          kubectl get pods || true
+
+      # Step 8.1: Apply infrastructure (DB, Redis, RabbitMQ) + ClusterIssuer
+      - name: Apply infrastructure manifests
+        run: kubectl apply -f k8s/infrastructure/
+
+      # Step 8.2: Wait for infrastructure to be FULLY ready before deploying services
+      - name: Wait for infrastructure pods
+        run: |
+          echo "=== PVC status ==="
+          kubectl get pvc
+          echo ""
+          echo "Waiting for PostgreSQL..."
+          kubectl wait --for=condition=Ready pod -l app=postgres --timeout=300s
+          echo "Waiting for PostgreSQL Chat..."
+          kubectl wait --for=condition=Ready pod -l app=postgres-chat --timeout=300s
+          echo "Waiting for Redis..."
+          kubectl wait --for=condition=Ready pod -l app=redis --timeout=120s
+          echo "Waiting for RabbitMQ..."
+          kubectl wait --for=condition=Ready pod -l app=rabbitmq --timeout=120s
+          echo ""
+          echo "=== All infrastructure is READY ==="
           kubectl get pods
 
-      # Step 9.1: Apply Microservices Deployments (excluding secrets.yaml)
+      # Step 9: Apply Microservices Deployments (excluding secrets.yaml)
       - name: Apply base manifests
         run: |
           kubectl apply -f k8s/base/auth-service.yaml
