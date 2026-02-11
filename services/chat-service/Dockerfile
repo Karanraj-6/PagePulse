@@ -21,6 +21,7 @@ ENV NODE_ENV=production
 COPY --from=builder /usr/src/app/dist ./dist
 COPY --from=builder /usr/src/app/packages/protos ./packages/protos
 COPY --from=builder /usr/src/app/packages/protos /usr/packages/protos
+COPY --from=builder /usr/src/app/src/db ./dist/db
 COPY --from=builder /usr/src/app/package-lock.json ./
 COPY services/chat-service/package.json ./
 
