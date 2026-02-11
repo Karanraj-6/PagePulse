@@ -16,7 +16,7 @@ spec:
       - name: dockerhub-secret
       containers:
       - name: chat-container
-        image: yourdockerhub/chat-service:latest
+        image: docker.io/yourdockerhub/chat-service:latest
         imagePullPolicy: IfNotPresent
         resources:
           requests:

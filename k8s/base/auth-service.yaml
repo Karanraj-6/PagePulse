@@ -16,7 +16,7 @@ spec:
       - name: dockerhub-secret
       containers:
       - name: auth-container
-        image: yourdockerhub/auth-service:latest
+        image: docker.io/yourdockerhub/auth-service:latest
         imagePullPolicy: IfNotPresent
         resources:
           requests:

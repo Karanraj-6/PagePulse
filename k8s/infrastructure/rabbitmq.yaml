@@ -17,7 +17,7 @@ spec:
       - name: dockerhub-secret
       containers:
       - name: rabbitmq
-        image: rabbitmq:3-management
+        image: docker.io/library/rabbitmq:3-management
         env:
         - name: RABBITMQ_DEFAULT_USER
           valueFrom:

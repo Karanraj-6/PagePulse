@@ -16,7 +16,7 @@ spec:
       - name: dockerhub-secret
       containers:
       - name: book-container
-        image: yourdockerhub/book-service:latest
+        image: docker.io/yourdockerhub/book-service:latest
         imagePullPolicy: IfNotPresent
         resources:
           requests:

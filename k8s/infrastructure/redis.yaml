@@ -16,7 +16,7 @@ spec:
       - name: dockerhub-secret
       containers:
       - name: redis
-        image: redis:alpine
+        image: docker.io/library/redis:alpine
         ports:
         - containerPort: 6379
 ---

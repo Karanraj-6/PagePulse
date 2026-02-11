@@ -16,7 +16,7 @@ spec:
       - name: dockerhub-secret
       containers:
         - name: notification-container
-          image: yourdockerhub/notification-service:latest
+          image: docker.io/yourdockerhub/notification-service:latest
           imagePullPolicy: IfNotPresent
 
           resources:
