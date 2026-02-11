@@ -33,6 +33,10 @@ spec:
         env:
         - name: GRPC_PORT
           value: "50052"
+        - name: DB_URL
+          value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres-service:5432/$(POSTGRES_DB)"
+        - name: RABBITMQ_URL
+          value: "amqp://$(RABBITMQ_DEFAULT_USER):$(RABBITMQ_DEFAULT_PASS)@rabbitmq-service:5672"
         readinessProbe:
           httpGet:
             path: /health
