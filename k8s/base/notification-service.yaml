@@ -17,7 +17,7 @@ spec:
       containers:
         - name: notification-container
           image: docker.io/yourdockerhub/notification-service:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
 
           resources:
             requests:

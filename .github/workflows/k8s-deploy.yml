@@ -184,7 +184,16 @@ jobs:
           echo "=== Events (last 5 min) ==="
           kubectl get events --sort-by=.lastTimestamp | tail -30
 
-      # Step 9: Apply Microservices Deployments (excluding secrets.yaml)
+      # Step 9: Clean up stale pods from previous failed deployments
+      - name: Clean up stale pods
+        run: |
+          echo "Deleting pods stuck in error states..."
+          kubectl delete pods --field-selector=status.phase=Failed --ignore-not-found=true || true
+          kubectl delete pods --field-selector=status.phase=Pending --ignore-not-found=true || true
+          echo "Current pod status after cleanup:"
+          kubectl get pods
+
+      # Step 9.1: Apply Microservices Deployments (excluding secrets.yaml)
       - name: Apply base manifests
         run: |
           kubectl apply -f k8s/base/auth-service.yaml

@@ -17,7 +17,7 @@ spec:
       containers:
       - name: auth-container
         image: docker.io/yourdockerhub/auth-service:latest
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         resources:
           requests:
             cpu: "100m"

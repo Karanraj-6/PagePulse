@@ -17,7 +17,7 @@ spec:
       containers:
       - name: book-container
         image: docker.io/yourdockerhub/book-service:latest
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         resources:
           requests:
             cpu: "100m"
