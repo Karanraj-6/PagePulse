@@ -132,7 +132,15 @@ jobs:
             --from-literal=S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      # Step 7: Apply infrastructure (DB, Redis, RabbitMQ)
+      # Step 7: Install cert-manager (required for ClusterIssuer CRD)
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml
+          echo "Waiting for cert-manager to be ready..."
+          kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager -n cert-manager
+          kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager-webhook -n cert-manager
+
+      # Step 8: Apply infrastructure (DB, Redis, RabbitMQ) + ClusterIssuer
       - name: Apply infrastructure manifests
         run: kubectl apply -f k8s/infrastructure/
 
