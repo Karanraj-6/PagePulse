@@ -204,16 +204,34 @@ jobs:
           kubectl set image deployment/notification-deployment notification-container=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/notification-service:${{ env.IMAGE_TAG }}
           kubectl rollout status deployment/notification-deployment --timeout=300s
 
-      # Step 11: Apply Ingress
+      # Step 11: Install NGINX Ingress Controller (required to process Ingress resources)
+      - name: Install NGINX Ingress Controller
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.6/deploy/static/provider/cloud/deploy.yaml
+          echo "Waiting for ingress-nginx controller to be ready..."
+          kubectl wait --namespace ingress-nginx --for=condition=Ready pod -l app.kubernetes.io/component=controller --timeout=300s
+
+      # Step 11.1: Apply Ingress rules
       - name: Apply Ingress
         run: kubectl apply -f k8s/ingress.yaml
 
       # Step 12: Verify Deployment
-      - name: Get all pods
-        run: kubectl get pods -o wide
-
-      - name: Get all services
-        run: kubectl get svc -o wide
+      - name: Verify all pods and endpoints
+        run: |
+          echo "=== Pods ==="
+          kubectl get pods -o wide
+          echo ""
+          echo "=== Services ==="
+          kubectl get svc -o wide
+          echo ""
+          echo "=== Endpoints (verify services have healthy backends) ==="
+          kubectl get endpoints auth-service book-service chat-service notification-service
+          echo ""
+          echo "=== Ingress ==="
+          kubectl get ingress
+          echo ""
+          echo "=== Ingress Controller External IP ==="
+          kubectl get svc -n ingress-nginx
 
       # Step 13: Debug on failure - show pod logs if something crashed
       - name: Debug pod status on failure
