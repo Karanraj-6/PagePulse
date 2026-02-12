@@ -444,10 +444,25 @@ io.on('connection', (socket) => {
                 [message_id, conversation_id, sender_id, content, sent_at]
             );
 
-            // Broadcast
+            // Broadcast to the conversation room
             io.to(conversation_id).emit('receive_private_message', {
                 message_id, conversation_id, sender_id, content, sent_at
             });
+
+            // ALSO send to the recipient's personal socket(s) 
+            // This ensures they get the 'GlobalNotifications' toast even if they are NOT in the chat room (e.g. browsing Home)
+            if (partRes.rows.length > 0) {
+                const recipientId = partRes.rows[0].user_id;
+                const recipientSockets = userSockets.get(recipientId);
+                if (recipientSockets) {
+                    for (const socketId of recipientSockets) {
+                        io.to(socketId).emit('receive_private_message', {
+                            message_id, conversation_id, sender_id, content, sent_at
+                        });
+                    }
+                    console.log(`[Message] Emitted to recipient ${recipientId} via direct socket`);
+                }
+            }
         } catch (err) {
             console.error("Error saving private message:", err);
             socket.emit("error", "Failed to send message");
