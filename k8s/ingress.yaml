@@ -13,11 +13,7 @@ metadata:
 
     cert-manager.io/cluster-issuer: letsencrypt-prod
 
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
-    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
-    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
 
 spec:
   tls:
@@ -51,11 +47,7 @@ metadata:
 
     cert-manager.io/cluster-issuer: letsencrypt-prod
 
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
-    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
-    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
 spec:
   tls:
     - hosts:
@@ -88,11 +80,7 @@ metadata:
 
     cert-manager.io/cluster-issuer: letsencrypt-prod
 
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
-    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
-    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
 spec:
   tls:
     - hosts:
@@ -125,11 +113,7 @@ metadata:
 
     cert-manager.io/cluster-issuer: letsencrypt-prod
 
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
-    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
-    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
 spec:
   tls:
     - hosts:
