@@ -37,13 +37,21 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// DEBUG: Log all incoming requests
+app.use((req, res, next) => {
+    console.log(`[HTTP] ${req.method} ${req.url}`);
+    next();
+});
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
     cors: {
         origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+            console.log(`[Socket] CORS Check for Origin: ${origin}`);
             if (!origin || allowedOrigins.includes(origin)) {
                 callback(null, true);
             } else {
+                console.error(`[Socket] CORS Blocked Origin: ${origin}`);
                 callback(new Error("Not allowed by CORS"));
             }
         },
