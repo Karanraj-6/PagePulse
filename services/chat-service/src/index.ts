@@ -15,7 +15,9 @@ const allowedOrigins = [
     "http://localhost:5173",
     "http://localhost:3000",
     "http://localhost:4173",
-    "https://pagepulse-ebon.vercel.app"
+    "https://pagepulse-ebon.vercel.app",
+    "https://68.233.107.28.nip.io",
+    "http://68.233.107.28.nip.io"
 ];
 
 const app = express();
