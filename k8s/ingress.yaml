@@ -145,3 +145,36 @@ spec:
                 name: notification-service
                 port:
                   number: 3000
+
+# Chat Socket Ingress (WebSocket - No Rewrite)
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-socket-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://pagepulse-ebon.vercel.app, https://68.233.107.28.nip.io"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+spec:
+  tls:
+    - hosts:
+        - 68.233.107.28.nip.io
+      secretName: pagepulse-tls
+  rules:
+    - host: 68.233.107.28.nip.io
+      http:
+        paths:
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: chat-service
+                port:
+                  number: 3000
