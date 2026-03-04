@@ -1,6 +1,6 @@
 # PagePulse Microservices Architecture
 
-PagePulse is a book rental and reading platform built using a **Microservices Architecture**. This document details the system design, communication patterns, and service responsibilities.
+PagePulse is a book reading platform built using a **Microservices Architecture**. This document details the system design, communication patterns, and service responsibilities.
 
 ## 🏗 Detailed System Architecture
 
@@ -60,9 +60,7 @@ flowchart TD
     
 
     %% === RabbitMQ Async Events ===
-    Book-->|Publish: book.rented|RabbitMQ
     Auth-->|Publish: friend.requested|RabbitMQ
-    RabbitMQ-->|Consume: book.rented|Notif
     RabbitMQ-->|Consume: friend.requested|Notif
 
     %% === Email ===
@@ -194,7 +192,7 @@ location /api/chat/ {
 - **Book Ingestion:** Downloads and parses books from Gutendex, splits into pages, and stores in Postgres.
 - **Trending Logic:** Uses Redis to track and cache trending books.
 - **Search:** Supports fuzzy search via Postgres and Gutendex fallback.
-- **gRPC:** Calls Auth for token validation and Payment for rental processing.
+- **gRPC:** Calls Auth for token validation.
 - **Database:** PostgreSQL (books, categories, book_pages, trending_books), Redis (cache).
 
 ### 4.3. Chat Service
@@ -205,7 +203,7 @@ location /api/chat/ {
 - **Database:** PostgreSQL (conversations, messages).
 
 ### 4.4. Notification Service
-- **Event Consumer:** Listens to RabbitMQ for events (e.g., book rented, friend request).
+- **Event Consumer:** Listens to RabbitMQ for events (e.g., friend request).
 - **Notification Storage:** Persists notifications and invitations in MongoDB.
 - **Email Delivery:** Sends emails via SMTP (welcome, friend request, invitation).
 - **gRPC:** Calls Auth for user info, pushes real-time notifications to Chat Service.
@@ -247,13 +245,6 @@ location /api/chat/ {
 4. Notification Service consumes event, stores welcome notification in MongoDB, sends welcome email, and pushes real-time notification to Chat Service via gRPC.
 5. Chat Service emits `receive_notification` event to the user's WebSocket.
 
-### 6.2. Book Rental
-1. User clicks "Rent Book" in the client.
-2. Client sends `POST /api/books/rent/:bookId` to API Gateway.
-3. Book Service validates JWT via gRPC call to Auth Service.
-4. Book Service calls Payment Service via gRPC to process payment.
-5. On success, Book Service publishes `book.rented` event to RabbitMQ.
-6. Notification Service consumes event, stores notification, sends email, and pushes real-time notification to Chat Service.
 
 ### 6.3. Private Chat
 1. User initiates chat via client UI.
@@ -285,38 +276,7 @@ location /api/chat/ {
 
 ## 🔄 Detailed Request Flows
 
-### 1. Book Rental Flow (Synchronous Orchestration)
-When a user clicks "Rent Book", the system performs a multi-step synchronous transaction across three services.
-
-```mermaid
-sequenceDiagram
-    participant Client as React Client
-    participant GW as API Gateway
-    participant Book as Book Service
-    participant Auth as Auth Service
-    participant Pay as Payment Service
-    participant RMQ as RabbitMQ
-    
-    Client->>GW: POST /api/books/rent/123 <br/>(Auth Header: Bearer xyz)
-    GW->>Book: Forward Request
-    
-    activate Book
-    note right of Book: 1. Validate User
-    Book->>Auth: gRPC ValidateToken(xyz)
-    Auth-->>Book: UserID: 456 (Valid)
-    
-    note right of Book: 2. Process Payment
-    Book->>Pay: gRPC ProcessPayment(456, $10.99)
-    Pay-->>Book: TxID: 999 (Success)
-    
-    note right of Book: 3. Finalize
-    Book->>RMQ: Publish "book.rented" {req_id: 999}
-    Book-->>GW: 200 OK {success: true}
-    deactivate Book
-    GW-->>Client: Rental Confirmed
-```
-
-### 2. Chat Connection Flow (WebSocket + gRPC)
+### 1. Chat Connection Flow (WebSocket + gRPC)
 Chat requires instant authentication during the WebSocket handshake.
 
 ```mermaid
@@ -352,22 +312,20 @@ sequenceDiagram
 ### 2. Synchronous Inter-Service (gRPC)
 Used when a service needs an immediate answer from another service. **These calls happen directly between services (Service-to-Service) and do NOT pass through the API Gateway.**
 *   **Book Service -> Auth Service**: Validates user tokens included in requests.
-*   **Book Service -> Payment Service**: Processes payments synchronously during a book rental transaction.
 *   **Chat Service -> Auth Service**: Validates user tokens immediately upon WebSocket connection handshake.
 
 ### 3. Asynchronous Events (RabbitMQ)
 Used for background tasks and decoupling.
-*   **Event**: `book.rented`
-    *   **Publisher**: `book-service`
-    *   **Consumer**: `notification-service` (Sends email confirmation)
+*   **Event**: `friend.requested`
+    *   **Publisher**: `auth-service`
+    *   **Consumer**: `notification-service`
 
 ## 📦 Service Breakdown
 
 | Service Name | Tech Stack | Responsibility | Port (Internal) |
 | :--- | :--- | :--- | :--- |
 | **Auth Service** | Express, JWT, gRPC | User management, Token generation & validation. | 3000 (HTTP), 50051 (gRPC) |
-| **Book Service** | Express, gRPC Client | Book catalog, Rental logic. Orchestrates Auth & Payment calls. | 3000 (HTTP), 50052 (gRPC) |
-| **Payment Service** | Express, gRPC Server | Payment processing logic. | 3000 (HTTP), 50053 (gRPC) |
+| **Book Service** | Express, gRPC Client | Book catalog. Orchestrates Auth calls. | 3000 (HTTP), 50052 (gRPC) |
 | **Chat Service** | Socket.io, gRPC Client | Real-time messaging where users can discuss books. | 3000 (HTTP) |
 | **Notification** | Node Worker, RabbitMQ | Listens for events and sends notifications. | N/A (Worker) |
 
