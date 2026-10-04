@@ -78,7 +78,7 @@ function loginUser(username, password) {
 // =============================
 export default function () {
   const username = 'karanraj3056@gmail.com';
-  const password = 'Kroops@7852';
+  const password = 'temppass@123';
 
   loginUser(username, password);
 
